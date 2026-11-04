@@ -1,13 +1,14 @@
 {
-  "name": "pi-telegram-sweeper",
-  "version": "1.0.0",
+  "name": "pi-telegram-coin-monitor",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Persistent Telegram monitor for public Pi wallet addresses",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=20" },
   "dependencies": {
-    "@stellar/stellar-sdk": "^12.0.0",
-    "dotenv": "^16.4.5",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
     "node-telegram-bot-api": "^0.66.0"
   }
 }

