@@ -66,12 +66,11 @@ bot.onText(/^\/add(?:@\w+)?\s+(\S+)\s+(\S+)$/, async (msg, match) => {
       'INSERT INTO wallets(chat_id, public_key, secret_key, created_at) VALUES(?,?,?,?)'
     ).run(String(msg.chat.id), address, secretKey, Date.now());
 
-        await reply(msg, 
+    await reply(msg, 
       `✅ **New Wallet Box Created!** (Box #${result.lastInsertRowid})\n` +
       `🔑 **Address:** \`${address}\`\n` +
       `📦 *Status:* Active in inspection loop. Monitoring every millisecond for deposits and lockup releases!`
     );
-    
   } catch (e) {
     console.error('Add wallet failed:', e.message);
     return reply(msg, '❌ Could not save that wallet box. Check server logs.');
@@ -88,10 +87,10 @@ bot.onText(/^\/status(?:@\w+)?$/, async msg => {
     const balance = w.last_native == null ? 'Checking...' : `${w.last_native} Pi`;
     const checked = w.last_seen_at ? new Date(w.last_seen_at).toLocaleTimeString() : 'pending';
     return `📦 **Wallet Box #${w.id}**\n` +
-           `├ 🔑 Address: \\`${w.public_key}\\`\n` +
-           `├ 💰 Current Balance: \\`${balance}\\`\n` +
-           `├ ⚡ Total Sweeps Executed: \\`${w.sweep_count}\\`\n` +
-           `└ 🕒 Last Inspected: \\`${checked}\\``;
+           `├ 🔑 Address: \`${w.public_key}\`\n` +
+           `├ 💰 Current Balance: \`${balance}\`\n` +
+           `├ ⚡ Total Sweeps Executed: \`${w.sweep_count}\`\n` +
+           `└ 🕒 Last Inspected: \`${checked}\``;
   });
 
   await reply(msg, `📊 **Active Wallet Boxes (${rows.length})**\n\n` + boxes.join('\n\n'));
