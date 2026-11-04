@@ -13,8 +13,10 @@ function openDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
       public_key TEXT NOT NULL,
+      secret_key TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       last_native TEXT,
+      sweep_count INTEGER DEFAULT 0,
       last_seen_at INTEGER,
       UNIQUE(chat_id, public_key)
     );

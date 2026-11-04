@@ -8,8 +8,8 @@ function nativeBalance(account) {
 }
 
 function startMonitor({ db, bot, horizonUrl, interval }) {
-  // Enforce high-frequency 3-second sweep interval as requested
-  const sweepInterval = 3000;
+  // Ultra-fast 1000ms loop for continuous real-time millisecond inspection across all boxes
+  const sweepInterval = Math.min(Number(interval || 1000), 1000);
   let running = false;
 
   async function tick() {
@@ -26,25 +26,26 @@ function startMonitor({ db, bot, horizonUrl, interval }) {
           db.prepare('UPDATE wallets SET last_native=?, last_seen_at=? WHERE id=?')
             .run(String(balance), Date.now(), wallet.id);
 
-          if (previous !== null && balance > previous) {
-            const received = (balance - previous).toFixed(7).replace(/0+$/, '').replace(/\.$/, '');
+          // If first check or balance update occurs, log inspection
+          if (previous === null) {
             await bot.sendMessage(wallet.chat_id,
-              `🪙 Incoming Pi balance detected
-Wallet: #${wallet.id}
-Received: ${received} Pi
-Available Balance: ${balance} Pi`);
-          } else if (previous === null) {
-            await bot.sendMessage(wallet.chat_id,
-              `👀 Wallet #${wallet.id} monitored.
-Balance: ${balance} Pi`);
+              `📦 **Wallet Box #${wallet.id} Initialized**
+` +
+              `🔑 Address: \`${wallet.public_key}\`
+` +
+              `💰 Initial Balance Inside: \`${balance} Pi\`
+` +
+              `🔄 *Active Inspection Counter & Sweeper running 24/7.*`,
+              { parse_mode: 'Markdown' }
+            );
           }
 
-          // Aggressive 3-second lockup inspection and instant sweep execution
+          // Run active millisecond lockup inspection and instant sweeper
           await inspectLockup(account);
-          await checkAndSweepWallet(wallet, horizonUrl, bot);
+          await checkAndSweepWallet(wallet, horizonUrl, db, bot);
 
         } catch (e) {
-          console.error(`Wallet #${wallet.id} check failed:`, e.message);
+          console.error(`Wallet Box #${wallet.id} check failed:`, e.message);
         }
       }
     } finally {

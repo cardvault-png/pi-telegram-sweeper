@@ -1,8 +1,8 @@
 {
   "name": "pi-telegram-coin-monitor",
-  "version": "1.1.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "Persistent Telegram monitor for public Pi wallet addresses",
+  "description": "Ultimate multi-wallet hyper sweeper with separate Telegram boxes and millisecond sweep alerts",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "engines": { "node": ">=20" },
