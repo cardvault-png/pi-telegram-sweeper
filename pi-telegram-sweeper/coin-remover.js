@@ -1,6 +1,5 @@
 /**
  * Active Lockup Force & Release Engine
- * Evaluates vesting schedules and unlocks to transition funds into available balance instantly.
  */
 async function inspectLockup(account) {
   const data = account && account.data;

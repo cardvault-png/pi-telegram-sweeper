@@ -45,7 +45,6 @@ bot.onText(/^\/help(?:@\w+)?$/, async msg => {
   await reply(msg, help());
 });
 
-// Command format: /add G... S...
 bot.onText(/^\/add(?:@\w+)?\s+(\S+)\s+(\S+)$/, async (msg, match) => {
   if (!permitted(msg)) return;
   const address = match[1].trim();
@@ -68,10 +67,8 @@ bot.onText(/^\/add(?:@\w+)?\s+(\S+)\s+(\S+)$/, async (msg, match) => {
     ).run(String(msg.chat.id), address, secretKey, Date.now());
 
     await reply(msg, 
-      `✅ **New Wallet Box Created!** (Box #${result.lastInsertRowid})
-` +
-      `🔑 **Address:** \`${address}\`
-` +
+      `✅ **New Wallet Box Created!** (Box #${result.lastInsertRowid})\n` +
+      `🔑 **Address:** \\`${address}\\`\n` +
       `📦 *Status:* Active in inspection loop. Monitoring every millisecond for deposits and lockup releases!`
     );
   } catch (e) {
@@ -89,22 +86,14 @@ bot.onText(/^\/status(?:@\w+)?$/, async msg => {
   const boxes = rows.map(w => {
     const balance = w.last_native == null ? 'Checking...' : `${w.last_native} Pi`;
     const checked = w.last_seen_at ? new Date(w.last_seen_at).toLocaleTimeString() : 'pending';
-    return `📦 **Wallet Box #${w.id}**
-` +
-           `├ 🔑 Address: \`${w.public_key}\`
-` +
-           `├ 💰 Current Balance: \`${balance}\`
-` +
-           `├ ⚡ Total Sweeps Executed: \`${w.sweep_count}\`
-` +
-           `└ 🕒 Last Inspected: \`${checked}\``;
+    return `📦 **Wallet Box #${w.id}**\n` +
+           `├ 🔑 Address: \\`${w.public_key}\\`\n` +
+           `├ 💰 Current Balance: \\`${balance}\\`\n` +
+           `├ ⚡ Total Sweeps Executed: \\`${w.sweep_count}\\`\n` +
+           `└ 🕒 Last Inspected: \\`${checked}\\``;
   });
 
-  await reply(msg, `📊 **Active Wallet Boxes (${rows.length})**
-
-` + boxes.join('
-
-'));
+  await reply(msg, `📊 **Active Wallet Boxes (${rows.length})**\n\n` + boxes.join('\n\n'));
 });
 
 bot.onText(/^\/remove(?:@\w+)?\s+(\d+)$/, async (msg, match) => {

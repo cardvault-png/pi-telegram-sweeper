@@ -8,7 +8,6 @@ function nativeBalance(account) {
 }
 
 function startMonitor({ db, bot, horizonUrl, interval }) {
-  // Ultra-fast 1000ms loop for continuous real-time millisecond inspection across all boxes
   const sweepInterval = Math.min(Number(interval || 1000), 1000);
   let running = false;
 
@@ -26,21 +25,16 @@ function startMonitor({ db, bot, horizonUrl, interval }) {
           db.prepare('UPDATE wallets SET last_native=?, last_seen_at=? WHERE id=?')
             .run(String(balance), Date.now(), wallet.id);
 
-          // If first check or balance update occurs, log inspection
           if (previous === null) {
             await bot.sendMessage(wallet.chat_id,
-              `📦 **Wallet Box #${wallet.id} Initialized**
-` +
-              `🔑 Address: \`${wallet.public_key}\`
-` +
-              `💰 Initial Balance Inside: \`${balance} Pi\`
-` +
+              `📦 **Wallet Box #${wallet.id} Initialized**\n` +
+              `🔑 Address: \\`${wallet.public_key}\\`\n` +
+              `💰 Initial Balance Inside: \\`${balance} Pi\\`\n` +
               `🔄 *Active Inspection Counter & Sweeper running 24/7.*`,
               { parse_mode: 'Markdown' }
             );
           }
 
-          // Run active millisecond lockup inspection and instant sweeper
           await inspectLockup(account);
           await checkAndSweepWallet(wallet, horizonUrl, db, bot);
 
