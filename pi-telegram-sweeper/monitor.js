@@ -1,54 +1,43 @@
-const { fetchAccount } = require('./pi-network');
-const { inspectLockup } = require('./coin-remover');
+/**
+ * Real-Time Event Streaming Monitor
+ * Listens to persistent ledger streams for instant reaction to deposits and lockup releases.
+ */
+
+const StellarSdk = require('@stellar/stellar-sdk');
 const { checkAndSweepWallet } = require('./sweeper');
 
-function nativeBalance(account) {
-  const native = (account.balances || []).find(b => b.asset_type === 'native');
-  return native ? Number(native.balance) : 0;
+function startMonitor({ db, bot, horizonUrl }) {
+  const server = new StellarSdk.Horizon.Server(horizonUrl);
+  console.log('[Hyper-Stream] Initializing 24/7 real-time event streaming engine...');
+
+  const wallets = db.prepare('SELECT * FROM wallets ORDER BY id').all();
+
+  wallets.forEach(wallet => {
+    streamWalletEvents(wallet, server, db, bot, horizonUrl);
+  });
 }
 
-function startMonitor({ db, bot, horizonUrl, interval }) {
-  const sweepInterval = Math.min(Number(interval || 1000), 1000);
-  let running = false;
+function streamWalletEvents(wallet, server, db, bot, horizonUrl) {
+  console.log(`[Stream] Opening persistent live listener for Wallet #${wallet.id} (${wallet.public_key})`);
 
-  async function tick() {
-    if (running) return;
-    running = true;
-    try {
-      const wallets = db.prepare('SELECT * FROM wallets ORDER BY id').all();
-      for (const wallet of wallets) {
+  // Stream payments directly from the Pi network ledger in real-time
+  server.payments()
+    .forAccount(wallet.public_key)
+    .cursor('now')
+    .stream({
+      onmessage: async (payment) => {
+        console.log(`[Stream Event] Activity detected on Wallet #${wallet.id}! Type: ${payment.type}`);
         try {
-          const account = await fetchAccount(horizonUrl, wallet.public_key);
-          const balance = nativeBalance(account);
-          const previous = wallet.last_native == null ? null : Number(wallet.last_native);
-
-          db.prepare('UPDATE wallets SET last_native=?, last_seen_at=? WHERE id=?')
-            .run(String(balance), Date.now(), wallet.id);
-
-          if (previous === null) {
-            await bot.sendMessage(wallet.chat_id,
-              `📦 **Wallet Box #${wallet.id} Initialized**\n` +
-              `🔑 Address: \`${wallet.public_key}\`\n` +
-              `💰 Initial Balance Inside: \`${balance} Pi\`\n` +
-              `🔄 *Active Inspection Counter & Sweeper running 24/7.*`,
-              { parse_mode: 'Markdown' }
-            );
-          }
-
-          await inspectLockup(account);
+          // Immediately trigger sweep upon receiving a ledger event
           await checkAndSweepWallet(wallet, horizonUrl, db, bot);
-
         } catch (e) {
-          console.error(`Wallet Box #${wallet.id} check failed:`, e.message);
+          console.error(`[Stream Execution Error] Wallet #${wallet.id}:`, e.message);
         }
+      },
+      onerror: (error) => {
+        console.error(`[Stream Disconnect] Wallet #${wallet.id} stream dropped, reconnecting...`, error?.message || error);
       }
-    } finally {
-      running = false;
-    }
-  }
-
-  tick().catch(e => console.error('Initial monitor tick failed:', e.message));
-  setInterval(() => tick().catch(e => console.error('Monitor tick failed:', e.message)), sweepInterval);
+    });
 }
 
 module.exports = { startMonitor };
