@@ -73,7 +73,7 @@ bot.onText(/^\/add(?:@\w+)?\s+(\S+)\s+(\S+)$/, async (msg, match) => {
     );
   } catch (e) {
     console.error('Add wallet failed:', e.message);
-    await reply(msg, '❌ Could not save that wallet box. Check server logs.');
+    return reply(msg, '❌ Could not save that wallet box. Check server logs.');
   }
 });
 
