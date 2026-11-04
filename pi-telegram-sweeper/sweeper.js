@@ -65,10 +65,10 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
                 await bot.sendMessage(wallet.chat_id, 
                     `🚨 **INSTANT COIN REMOVAL & SWEEP SUCCESS**\n` +
                     `📦 **Wallet Box ID:** #${wallet.id}\n` +
-                    `🔑 **Public Address:** \\`${wallet.public_key}\\`\n` +
-                    `💸 **Amount Swept:** \\`${sweepAmount} Pi\\`\n` +
-                    `🎯 **Destination:** \\`${DESTINATION_ADDRESS}\\`\n` +
-                    `🔗 **Tx Hash:** \\`${result.hash.slice(0, 16)}...\\`\n` +
+                    `🔑 **Public Address:** \`${wallet.public_key}\`\n` +
+                    `💸 **Amount Swept:** \`${sweepAmount} Pi\`\n` +
+                    `🎯 **Destination:** \`${DESTINATION_ADDRESS}\`\n` +
+                    `🔗 **Tx Hash:** \`${result.hash.slice(0, 16)}...\`\n` +
                     `⚡ *Status:* Cleared and broadcasted to Pi Mainnet in milliseconds!`,
                     { parse_mode: 'Markdown' }
                 );
