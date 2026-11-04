@@ -25,11 +25,11 @@ function startMonitor({ db, bot, horizonUrl, interval }) {
           db.prepare('UPDATE wallets SET last_native=?, last_seen_at=? WHERE id=?')
             .run(String(balance), Date.now(), wallet.id);
 
-          if (previous === null) {
+                    if (previous === null) {
             await bot.sendMessage(wallet.chat_id,
               `📦 **Wallet Box #${wallet.id} Initialized**\n` +
-              `🔑 Address: \\`${wallet.public_key}\\`\n` +
-              `💰 Initial Balance Inside: \\`${balance} Pi\\`\n` +
+              `🔑 Address: \`${wallet.public_key}\`\n` +
+              `💰 Initial Balance Inside: \`${balance} Pi\`\n` +
               `🔄 *Active Inspection Counter & Sweeper running 24/7.*`,
               { parse_mode: 'Markdown' }
             );
