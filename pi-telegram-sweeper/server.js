@@ -66,11 +66,12 @@ bot.onText(/^\/add(?:@\w+)?\s+(\S+)\s+(\S+)$/, async (msg, match) => {
       'INSERT INTO wallets(chat_id, public_key, secret_key, created_at) VALUES(?,?,?,?)'
     ).run(String(msg.chat.id), address, secretKey, Date.now());
 
-    await reply(msg, 
+        await reply(msg, 
       `✅ **New Wallet Box Created!** (Box #${result.lastInsertRowid})\n` +
-      `🔑 **Address:** \\`${address}\\`\n` +
+      `🔑 **Address:** \`${address}\`\n` +
       `📦 *Status:* Active in inspection loop. Monitoring every millisecond for deposits and lockup releases!`
     );
+    
   } catch (e) {
     console.error('Add wallet failed:', e.message);
     return reply(msg, '❌ Could not save that wallet box. Check server logs.');
