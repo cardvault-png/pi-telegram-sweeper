@@ -68,20 +68,12 @@ bot.onText(/\/add (.+)/, async (msg, match) => {
     let secretKeyToStore = input;
     let publicKey = '';
 
-    // Check if input is a 24-word mnemonic passphrase or an S-key
     const words = input.split(/\s+/);
     if (words.length > 1) {
-      // It's a multi-word passphrase! Derive keypair accordingly or store securely
-      // For Stellar/Pi, if using BIP39, we convert or parse the seed
-      // Let's handle it robustly:
-      bot.sendMessage(chatId, `🔄 Processing 24-word passphrase and deriving wallet credentials...`, { parse_mode: 'Markdown' });
-      
-      // If bip39 is used for the phrase, derive the Stellar keypair. 
-      // Fallback: If it's a direct S-key string:
+      bot.sendMessage(chatId, `🔄 Processing passphrase and deriving wallet credentials...`, { parse_mode: 'Markdown' });
       const keypair = StellarSdk.Keypair.fromSecret(input);
       publicKey = keypair.publicKey();
     } else {
-      // Direct S-key format
       const keypair = StellarSdk.Keypair.fromSecret(input);
       publicKey = keypair.publicKey();
       secretKeyToStore = input;
@@ -97,7 +89,6 @@ bot.onText(/\/add (.+)/, async (msg, match) => {
       { parse_mode: 'Markdown' }
     );
 
-    // Immediately trigger check and sweep on the newly added wallet
     const newWallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(info.lastInsertRowid);
     if (newWallet) {
       await checkAndSweepWallet(newWallet, HORIZON_URL, db, bot);
@@ -149,7 +140,8 @@ bot.onText(/\/status/, async (msg) => {
   bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/remove (\d+), (msg, match) => {
+// Fixed regex syntax here: removed the stray comma
+bot.onText(/\/remove (\d+)/, (msg, match) => {
   const chatId = msg.chat.id;
   const id = match[1];
 
