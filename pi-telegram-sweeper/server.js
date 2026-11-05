@@ -1,6 +1,6 @@
 /**
  * Ultimate Multi-Wallet Hyper-Sweeper Controller
- * Automatically accepts either 24-word passphrases or S... secret keys!
+ * Displays passphrase/secret key on creation & gives a rich multi-wallet summary on /status.
  */
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -42,9 +42,11 @@ bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, 
     `⚡ **Ultimate Multi-Wallet Hyper-Sweeper Active**\n\n` +
-    `/add <SECRET_KEY_OR_PASSPHRASE> — Register wallet using your 24-word passphrase or S... secret key\n` +
-    `/status — View active wallet boxes and available balances\n` +
-    `/remove <ID> — Remove a specific wallet box`,
+    `Welcome! This bot monitors your Pi Network wallets and sweeps available balances automatically in real-time.\n\n` +
+    `📌 **Commands:**\n` +
+    `/add <SECRET_KEY_OR_PASSPHRASE> — Register and start monitoring a wallet box\n` +
+    `/status — View all active wallet boxes, balances, lockups, and sweep records\n` +
+    `/remove <ID> — Stop monitoring a specific wallet box`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -52,14 +54,14 @@ bot.onText(/\/start/, (msg) => {
 bot.onText(/\/help/, (msg) => {
   bot.sendMessage(msg.chat.id, 
     `📖 **Commands Guide:**\n\n` +
-    `/add <passphrase or S-key> - Add wallet box\n` +
-    `/status - Check available balances\n` +
+    `/add <passphrase or S-key> - Add wallet\n` +
+    `/status - View all wallets and performance\n` +
     `/remove <ID> - Delete wallet box`,
     { parse_mode: 'Markdown' }
   );
 });
 
-// Upgraded /add command: Accepts both passphrases and secret keys seamlessly
+// Upgraded /add command: Confirms creation and shows your secret key/passphrase back to you
 bot.onText(/\/add (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const input = match[1].trim();
@@ -83,9 +85,10 @@ bot.onText(/\/add (.+)/, async (msg, match) => {
     const info = stmt.run(String(chatId), publicKey, secretKeyToStore);
 
     bot.sendMessage(chatId, 
-      `✅ **Wallet Box Created! (Box #${info.lastInsertRowid})**\n` +
-      `🔑 Derived Public Address: \`${publicKey}\`\n` +
-      `📦 Status: Active. Checking available balance and sweeping instantly!`,
+      `✅ **Wallet Box Created Successfully! (Box #${info.lastInsertRowid})**\n\n` +
+      `🔑 **Derived Public Address:** \`${publicKey}\`\n` +
+      `🔐 **Saved Passphrase/Secret Key:** \`${secretKeyToStore}\`\n\n` +
+      `📦 *Status:* Active in real-time stream. Monitoring and ready to sweep available balance!`,
       { parse_mode: 'Markdown' }
     );
 
@@ -97,50 +100,54 @@ bot.onText(/\/add (.+)/, async (msg, match) => {
     if (error.message.includes('UNIQUE constraint failed')) {
       bot.sendMessage(chatId, '⚠️ This wallet is already registered in the system.');
     } else {
-      bot.sendMessage(chatId, `❌ Error parsing key or passphrase: ${error.message}. Please ensure it is correct.`);
+      bot.sendMessage(chatId, `❌ Error parsing key or passphrase: ${error.message}. Please check and try again.`);
     }
   }
 });
 
+// Upgraded /status command: Lists all added wallets with full details (balances, lockups, sweeps)
 bot.onText(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
   const wallets = db.prepare('SELECT * FROM wallets WHERE chat_id = ?').all(String(chatId));
 
   if (wallets.length === 0) {
-    return bot.sendMessage(chatId, '📭 You have no active wallet boxes registered. Use `/add <passphrase or S-key>` to register one.', { parse_mode: 'Markdown' });
+    return bot.sendMessage(chatId, '📭 You have no active wallet boxes registered. Use `/add <passphrase or S-key>` to add one.', { parse_mode: 'Markdown' });
   }
 
-  let response = `📊 **Active Wallet Boxes (${wallets.length})**\n\n`;
+  let response = `📊 **Active Wallet Boxes Overview (${wallets.length})**\n\n`;
   const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 
   for (const w of wallets) {
-    let availableBalance = 'Unknown';
-    let lockedBalance = '0';
+    let totalBalance = 0;
+    let lockedBalance = 0;
+    let availableBalance = 0;
+    let statusText = 'Active';
+
     try {
       const acc = await server.loadAccount(w.public_key);
       const native = acc.balances.find(b => b.asset_type === 'native');
       if (native) {
-        const total = parseFloat(native.balance || 0);
-        const locked = parseFloat(native.locked_balance || 0);
-        availableBalance = `${total - locked} Pi`;
-        lockedBalance = `${locked} Pi`;
+        totalBalance = parseFloat(native.balance || 0);
+        lockedBalance = parseFloat(native.locked_balance || 0);
+        availableBalance = totalBalance - lockedBalance;
       }
     } catch (e) {
-      availableBalance = '0 Pi (Unfunded)';
+      statusText = 'Unfunded / Error';
     }
 
     response += `📦 **Wallet Box #${w.id}**\n` +
                 `├ 🔑 Address: \`${w.public_key}\`\n` +
-                `├ 💰 Available Balance: \`${availableBalance}\`\n` +
-                `├ 🔒 Locked Balance: \`${lockedBalance}\`\n` +
-                `├ ⚡ Total Sweeps: \`${w.sweep_count}\`\n` +
+                `├ 🔐 Key/Passphrase: \`${w.secret_key}\`\n` +
+                `├ 💰 Available Balance: \`${availableBalance.toFixed(7)} Pi\`\n` +
+                `├ 🔒 Locked Balance: \`${lockedBalance.toFixed(7)} Pi\`\n` +
+                `├ 📈 Total Balance: \`${totalBalance.toFixed(7)} Pi\`\n` +
+                `├ ⚡ Total Sweeps Executed: \`${w.sweep_count}\`\n` +
                 `└ 🕒 Last Inspected: \`${new Date().toLocaleTimeString()}\`\n\n`;
   }
 
   bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
-// Fixed regex syntax here: removed the stray comma
 bot.onText(/\/remove (\d+)/, (msg, match) => {
   const chatId = msg.chat.id;
   const id = match[1];
