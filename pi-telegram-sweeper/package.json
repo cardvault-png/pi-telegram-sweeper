@@ -1,15 +1,19 @@
 {
-  "name": "pi-telegram-coin-monitor",
-  "version": "3.1.1",
-  "private": true,
-  "description": "Ultimate multi-wallet hyper sweeper with real Stellar SDK transaction signing and broadcasting",
-  "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=20" },
+  "name": "pi-network-sweeper-engine",
+  "version": "1.0.0",
+  "description": "Ultra-high-speed multi-wallet automated balance sweeper and monitoring platform.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "@stellar/stellar-sdk": "^12.3.0",
-    "better-sqlite3": "^11.7.0",
-    "dotenv": "^16.4.7",
+    "@stellar/stellar-sdk": "^13.0.0",
+    "better-sqlite3": "^11.5.0",
+    "dotenv": "^16.4.5",
     "node-telegram-bot-api": "^0.66.0"
-  }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
 }
