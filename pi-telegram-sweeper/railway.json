@@ -16,7 +16,12 @@
   },
   "phases": {
     "setup": {
-      "nixPkgs": ["nodejs", "python3", "gnumake", "gcc"]
+      "nixPkgs": [
+        "nodejs_18",
+        "python3",
+        "gnumake",
+        "gcc"
+      ]
     }
   }
 }
