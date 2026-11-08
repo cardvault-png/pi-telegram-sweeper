@@ -55,7 +55,16 @@ function initDatabase() {
 
 const WalletManager = {
   addLiveWallet({ id, publicKey, secretKey, label, chatId }) {
-    liveWalletsMap.set(String(id), { id, publicKey, secretKey, label, chatId });
+    liveWalletsMap.set(String(id), { 
+      id, 
+      publicKey, 
+      public_key: publicKey, // Ensures compatibility with all code pathways
+      secretKey, 
+      secret_key: secretKey, // Ensures compatibility with all code pathways
+      label, 
+      chatId,
+      chat_id: chatId 
+    });
     log('INFO', `Wallet Box #${id} loaded successfully into volatile system memory.`);
   },
   
