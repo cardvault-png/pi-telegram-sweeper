@@ -1,17 +1,12 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
-const sqlite3 = require('sqlite3').verbose();
 
-// 🌐 FORCE PRODUCTION MAINNET API CLUSTER ENDPOINT
 const HORIZON_URL = 'https://minepi.com';
 const NETWORK_PASSPHRASE = 'Pi Network';
 const MASTER_DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
 const POLL_INTERVAL_MS = Math.max(100, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
-const DATA_DIR = process.env.DATA_DIR || '/data';
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 const walletLocks = new Set();
@@ -19,41 +14,13 @@ let monitorRunning = false;
 let monitorTimeoutId = null;
 
 const liveWalletsMap = new Map();
+const memoryTransactionLog = []; // Holds transaction audits safely in memory logs
 
 function getErrorDetails(error) {
   if (error?.response?.data?.extras?.result_codes) {
     return JSON.stringify(error.response.data.extras.result_codes);
   }
   return error?.response?.data?.title || error?.message || String(error);
-}
-
-function log(level, message, details) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [Sweeper ${level}] ${message}`, details || '');
-}
-
-function initDatabase() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const dbPath = path.join(DATA_DIR, 'sweeper.db');
-  const db = new sqlite3.Database(dbPath);
-  
-  db.serialize(() => {
-    db.run('PRAGMA journal_mode = WAL');
-    db.run(`
-      CREATE TABLE IF NOT EXISTS sweeper_transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        wallet_id TEXT NOT NULL,
-        source_address TEXT NOT NULL,
-        destination_address TEXT NOT NULL,
-        amount TEXT NOT NULL,
-        transaction_hash TEXT,
-        status TEXT NOT NULL,
-        error_details TEXT,
-        created_at TEXT NOT NULL
-      );
-    `);
-  });
-  return db;
 }
 
 const WalletManager = {
@@ -68,7 +35,7 @@ const WalletManager = {
       customAmount: customAmount ? Number(customAmount) : null,
       lastMessageId: null
     });
-    log('INFO', `Wallet Box #${id} mapped successfully into RAM memory.`);
+    console.log(`[Sweeper INFO] Wallet Box #${id} mapped successfully into RAM memory.`);
   },
   
   removeLiveWallet(id) {
@@ -82,59 +49,71 @@ const WalletManager = {
 
 async function updateStatusBoard(bot, wallet, statusText) {
   if (!bot || !wallet.chatId) return;
-  
-  // Clean new lines for separate reading windows to prevent message clump logs
   try {
     await bot.sendMessage(wallet.chatId, statusText, {
       parse_mode: 'HTML',
       disable_web_page_preview: true
     });
   } catch (error) {
-    log('ERROR', 'Telegram display failed:', error.message);
+    console.error('[Sweeper ERROR] Telegram notification failure:', error.message);
   }
 }
 
 const SweeperEngine = {
+  async autoClaimMoveBalances(publicKey, sourceKeypair, baseFee) {
+    try {
+      const claimablePage = await server.claimableBalances().claimant(publicKey).call();
+      if (!claimablePage.records || claimablePage.records.length === 0) return;
+
+      for (const record of claimablePage.records) {
+        try {
+          const freshAccount = await server.loadAccount(publicKey);
+          const tx = new StellarSdk.TransactionBuilder(freshAccount, {
+            fee: String(baseFee * 25), 
+            networkPassphrase: NETWORK_PASSPHRASE
+          })
+          .addOperation(StellarSdk.Operation.claimClaimableBalance({ balanceId: record.id }))
+          .setTimeout(10).build();
+
+          tx.sign(sourceKeypair);
+          await server.submitTransaction(tx);
+          console.log(`[Sweeper SUCCESS] Auto-Move executed for balance: ${record.id}`);
+        } catch (e) {
+          continue;
+        }
+      }
+    } catch (err) {}
+  },
+
   async evaluateBalance(publicKey) {
-    // Exposes the raw network error to help us see why the node connection is dropping
     const account = await server.loadAccount(publicKey);
     const native = account.balances.find(b => b.asset_type === 'native' || b.asset_code === 'PI' || b.asset_code === 'Pi');
-    
     if (!native) return { spendable: 0, total: 0, verified: false };
 
     const ledgerTotal = Number(native.balance || 0);
-    
-    // Core property check across Pi-specific lockup layout fields
     let locked = Number(native.locked_balance || native.authorized_to_maintain_liabilities || 0);
-    let spendable = Math.max(0, ledgerTotal - locked);
-
-    return { 
-      spendable, 
-      total: ledgerTotal, 
-      verified: true 
-    };
+    return { spendable: Math.max(0, ledgerTotal - locked), total: ledgerTotal, verified: true };
   },
 
-  async executeInstantSweep(db, bot, wallet) {
+  async executeInstantSweep(bot, wallet) {
     const id = String(wallet.id);
-    if (walletLocks.has(id)) return { status: 'LOCKED' };
+    if (walletLocks.has(id)) return;
     walletLocks.add(id);
 
     try {
       const activeDestination = wallet.destination || MASTER_DESTINATION;
       if (!activeDestination) {
-        await updateStatusBoard(bot, wallet, `❌ <b>CONFIGURATION ERROR</b>\n📦 Box: #${id}\nTarget routing address is completely missing.`);
-        return { status: 'NO_DESTINATION' };
+        await updateStatusBoard(bot, wallet, `❌ <b>CONFIGURATION FAULT</b>\n📦 Box: #${id}\nTarget routing address is completely missing.`);
+        return;
       }
 
       const sourceKeypair = StellarSdk.Keypair.fromSecret(wallet.secretKey);
       let baseFee = 100;
       try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100; }
 
-      let currentAvailable = 0;
-      let totalLedgerPool = 0;
-      let isNodeError = false;
-      let nodeErrorMsg = '';
+      await this.autoClaimMoveBalances(wallet.publicKey, sourceKeypair, baseFee);
+
+      let currentAvailable = 0, totalLedgerPool = 0, isNodeError = false, nodeErrorMsg = '';
 
       try {
         const evalResult = await this.evaluateBalance(wallet.publicKey);
@@ -145,29 +124,23 @@ const SweeperEngine = {
         nodeErrorMsg = getErrorDetails(err);
       }
 
-      // If the node handshake fails, output the exact raw network error text string immediately
       if (isNodeError) {
         await updateStatusBoard(bot, wallet,
-          `📡 <b>NODE CONNECTION FAULT</b>\n` +
-          `📦 Box ID: #${wallet.id}\n` +
+          `📡 <b>NODE CONNECTION FAULT</b>\n📦 Box ID: #${wallet.id}\n` +
           `❌ Error Code: <code>${nodeErrorMsg}</code>\n` +
-          `🔧 <i>Action: Node connection failed or account not activated on Mainnet ledger.</i>`
+          `🔧 <i>Action: Retrying endpoint handshakes automatically...</i>`
         );
-        return { status: 'NODE_ERROR' };
+        return;
       }
 
-      // Continuous telemetry readout loop
       await updateStatusBoard(bot, wallet, 
-        `🔍 <b>MONITOR CORE LOG</b>\n` +
-        `📦 Box ID: #${wallet.id}\n` +
+        `🔍 <b>MONITOR CORE LOG</b>\n📦 Box ID: #${wallet.id}\n` +
         `💰 Available Balance: <code>${currentAvailable.toFixed(7)} Pi</code>\n` +
         `📊 Ledger Total Pool: <code>${totalLedgerPool.toFixed(7)} Pi</code>\n` +
         `📡 <i>Status: Actively polling target parameters...</i>`
       );
 
-      if (currentAvailable <= MIN_THRESHOLD) {
-        return { status: 'POOL_EMPTY' };
-      }
+      if (currentAvailable <= MIN_THRESHOLD) return;
 
       let targetAmount = 0;
       let isFixedStrategy = false;
@@ -181,7 +154,7 @@ const SweeperEngine = {
         targetAmount = currentAvailable - 0.02;
       }
 
-      if (targetAmount <= 0) return { status: 'POOL_EXHAUSTED' };
+      if (targetAmount <= 0) return;
 
       let success = false, sweptAmount = 0, txHash = '', errorReason = '';
 
@@ -207,10 +180,9 @@ const SweeperEngine = {
         errorReason = getErrorDetails(err);
       }
 
-      const now = new Date().toISOString();
       if (success) {
         const remainingPool = Math.max(0, currentAvailable - sweptAmount);
-        db.run(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`, [id, wallet.publicKey, activeDestination, String(sweptAmount), txHash, now]);
+        memoryTransactionLog.push({ id, sweptAmount, txHash, timestamp: new Date().toISOString() });
         
         await bot.sendMessage(wallet.chatId, 
           `🚀 <b>TRANSFER SUCCESSFUL!</b>\n\n` +
@@ -219,18 +191,16 @@ const SweeperEngine = {
           `📉 <b>Remaining Pool:</b> <code>${remainingPool.toFixed(7)} Pi</code>\n` +
           `🔗 <b>Tx Hash:</b> <code>${txHash}</code>`
         );
-      } else {
-        db.run(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`, [id, wallet.publicKey, activeDestination, errorReason, now]);
       }
     } catch (criticalError) {
-      log('ERROR', `Loop Failure on Box #${id}`, criticalError.message);
+      console.error(`[Sweeper ERROR] Critical exception on Box #${id}:`, criticalError.message);
     } finally {
       walletLocks.delete(id);
     }
   }
 };
 
-function startSweeperEngine(db, bot) {
+function startSweeperEngine(bot) {
   if (monitorRunning) return;
   monitorRunning = true;
 
@@ -239,10 +209,10 @@ function startSweeperEngine(db, bot) {
     try {
       const wallets = WalletManager.getLiveWallets();
       for (const wallet of wallets) {
-        await SweeperEngine.executeInstantSweep(db, bot, wallet);
+        await SweeperEngine.executeInstantSweep(bot, wallet);
       }
     } catch (err) {
-      log('ERROR', 'Loop error context:', err.message);
+      console.error('[Sweeper ERROR] Core daemon exception:', err.message);
     }
     if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
   };
@@ -254,4 +224,4 @@ function stopSweeperEngine() {
   if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
 }
 
-module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
+module.exports = { WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
