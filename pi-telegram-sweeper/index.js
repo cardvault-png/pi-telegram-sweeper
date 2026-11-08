@@ -3,6 +3,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const StellarSdk = require('@stellar/stellar-sdk');
+// ✅ CORRECTED IMPORT: Removes the old database function hooks completely
 const { WalletManager, startSweeperEngine } = require('./sweeper-engine');
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -11,6 +12,7 @@ if (!TELEGRAM_BOT_TOKEN) {
   process.exit(1);
 }
 
+// ✅ CORRECTED SETUP: Launches the Telegram Bot client cleanly
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
 console.log('[System Init] Telegram dynamic matrix-updater active.');
