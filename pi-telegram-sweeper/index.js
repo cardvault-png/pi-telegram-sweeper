@@ -1,28 +1,3 @@
-monitorRunning) return;
-try {
-const wallets = WalletManager.getLiveWallets();
-for (const wallet of wallets) {
-await SweeperEngine.executeInstantSweep(db, bot, wallet);
-}
-} catch (err) {
-log('ERROR', 'Loop error context:', err.message);
-}
-if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
-};
-corePollingCycle();
-}
-function stopSweeperEngine() {
-monitorRunning = false;
-if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
-}
-module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
-
----
-
-### 2. Update **`index.js`** on GitHub
-Open `index.js` in your repository and paste this exact, complete code:
-
-```javascript
 'use strict';
 
 require('dotenv').config();
@@ -39,7 +14,7 @@ if (!TELEGRAM_BOT_TOKEN) {
 const db = initDatabase();
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
-console.log('[System Init] Telegram command listener engine activated.');
+console.log('[System Init] Telegram dynamic matrix-updater active.');
 startSweeperEngine(db, bot);
 
 bot.onText(/\/addwallet (.+)/, async (msg, match) => {
@@ -58,7 +33,6 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   let label = `Wallet_${id}`;
   let customAmount = null;
 
-  // Evaluate variable parameter indexing blocks safely
   if (inputParams[2]) {
     try {
       StellarSdk.StrKey.decodeEd25519PublicKey(inputParams[2]);
@@ -90,7 +64,7 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
       await bot.deleteMessage(chatId, msg.message_id);
     } catch (e) {}
 
-    let routeMsg = destination ? `📥 Route Target: <code>${destination}</code>` : `🛡️ Fallback Rule Target active.`;
+    let routeMsg = destination ? `📥 Route Target: <code>${destination}</code>` : `🛡️ Fallback Master Target active.`;
     let strategyMsg = customAmount ? `🎯 Targeted Sweep: <b>${customAmount} Pi</b>` : `⚡ Adaptive Maximal Pool Sweep activated.`;
 
     bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory Matrix!</b>\n📦 Box ID: <code>${id}</code>\n🔑 Address: <code>${publicKey}</code>\n${routeMsg}\n${strategyMsg}`, { parse_mode: 'HTML' });
@@ -108,7 +82,7 @@ bot.onText(/\/status/, (msg) => {
   let textReport = `📝 <b>Active Volatile Monitoring Nodes (${activeList.length}):</b>\n\n`;
   activeList.forEach(w => {
     let modeText = w.customAmount ? `🎯 Target: <b>${w.customAmount} Pi</b>` : `⚡ Mode: <b>Max Sweep</b>`;
-    let routeText = w.destination ? `📥 Custom Address: <code>${w.destination}</code>` : `🛡️ Fallback Configured`;
+    let routeText = w.destination ? `📥 Custom Address: <code>${w.destination}</code>` : `🛡️ Fallback Master Variable Configured`;
     textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Source Address: <code>${w.publicKey}</code>\n${routeText}\n${modeText}\n\n`;
   });
   bot.sendMessage(msg.chat.id, textReport, { parse_mode: 'HTML' });
