@@ -1,3 +1,28 @@
+monitorRunning) return;
+try {
+const wallets = WalletManager.getLiveWallets();
+for (const wallet of wallets) {
+await SweeperEngine.executeInstantSweep(db, bot, wallet);
+}
+} catch (err) {
+log('ERROR', 'Loop error context:', err.message);
+}
+if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
+};
+corePollingCycle();
+}
+function stopSweeperEngine() {
+monitorRunning = false;
+if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
+}
+module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
+
+---
+
+### 2. Update **`index.js`** on GitHub
+Open `index.js` in your repository and paste this exact, complete code:
+
+```javascript
 'use strict';
 
 require('dotenv').config();
@@ -23,13 +48,29 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   
   const inputParams = match[1].split(' ');
   if (inputParams.length < 2) {
-    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [Label_Optional] [Amount_Optional]</code>', { parse_mode: 'HTML' });
+    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [TargetAddress_Optional] [Label_Optional] [Amount_Optional]</code>', { parse_mode: 'HTML' });
   }
 
   const id = inputParams[0];
   const secretKey = inputParams[1];
-  const label = inputParams[2] || `Wallet_${id}`;
-  const customAmount = inputParams[3] ? inputParams[3] : null;
+  
+  let destination = null;
+  let label = `Wallet_${id}`;
+  let customAmount = null;
+
+  // Evaluate variable parameter indexing blocks safely
+  if (inputParams[2]) {
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(inputParams[2]);
+      destination = inputParams[2];
+      label = inputParams[3] || `Wallet_${id}`;
+      customAmount = inputParams[4] ? inputParams[4] : null;
+    } catch (e) {
+      destination = null;
+      label = inputParams[2];
+      customAmount = inputParams[3] ? inputParams[3] : null;
+    }
+  }
 
   try {
     const keypair = StellarSdk.Keypair.fromSecret(secretKey);
@@ -39,6 +80,7 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
       id,
       publicKey,
       secretKey,
+      destination,
       label,
       chatId: String(chatId),
       customAmount
@@ -48,9 +90,10 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
       await bot.deleteMessage(chatId, msg.message_id);
     } catch (e) {}
 
-    let speedStrategyMsg = customAmount ? `🎯 Targeted Amount Strategy: <b>${customAmount} Pi</b>` : `⚡ Adaptive Maximal Pool Strategy activated.`;
+    let routeMsg = destination ? `📥 Route Target: <code>${destination}</code>` : `🛡️ Fallback Rule Target active.`;
+    let strategyMsg = customAmount ? `🎯 Targeted Sweep: <b>${customAmount} Pi</b>` : `⚡ Adaptive Maximal Pool Sweep activated.`;
 
-    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory Matrix!</b>\n📦 Box ID: <code>${id}</code>\n🏷️ Label: <code>${label}</code>\n🔑 Derived Address: <code>${publicKey}</code>\n${speedStrategyMsg}\n\n🗑️ <i>Private key purged from chat logs. Monitoring is live...</i>`, { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory Matrix!</b>\n📦 Box ID: <code>${id}</code>\n🔑 Address: <code>${publicKey}</code>\n${routeMsg}\n${strategyMsg}`, { parse_mode: 'HTML' });
   } catch (err) {
     bot.sendMessage(chatId, `❌ <b>Structural Validation Fault:</b>\n<code>${err.message}</code>`, { parse_mode: 'HTML' });
   }
@@ -65,7 +108,8 @@ bot.onText(/\/status/, (msg) => {
   let textReport = `📝 <b>Active Volatile Monitoring Nodes (${activeList.length}):</b>\n\n`;
   activeList.forEach(w => {
     let modeText = w.customAmount ? `🎯 Target: <b>${w.customAmount} Pi</b>` : `⚡ Mode: <b>Max Sweep</b>`;
-    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Address: <code>${w.publicKey}</code>\n${modeText}\n\n`;
+    let routeText = w.destination ? `📥 Custom Address: <code>${w.destination}</code>` : `🛡️ Fallback Configured`;
+    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Source Address: <code>${w.publicKey}</code>\n${routeText}\n${modeText}\n\n`;
   });
   bot.sendMessage(msg.chat.id, textReport, { parse_mode: 'HTML' });
 });
