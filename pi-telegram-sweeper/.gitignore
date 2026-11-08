@@ -1,0 +1,13 @@
+.env
+.env.local
+.env.production
+/data
+*.db
+*.db-wal
+*.db-shm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
