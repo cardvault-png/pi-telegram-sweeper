@@ -1,0 +1,19 @@
+{
+  "name": "pi-network-sweeper-engine",
+  "version": "1.0.0",
+  "description": "Ultra-high-speed multi-wallet automated balance sweeper and monitoring platform.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^13.0.0",
+    "better-sqlite3": "^11.5.0",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
+}
