@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
+const sqlite3 = require('sqlite3').verbose();
 
 const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://minepi.com';
 const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network';
@@ -32,22 +33,25 @@ function log(level, message, details) {
 
 function initDatabase() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const Database = require('better-sqlite3');
-  const db = new Database(path.join(DATA_DIR, 'sweeper.db'));
-  db.pragma('journal_mode = WAL');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sweeper_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wallet_id TEXT NOT NULL,
-      source_address TEXT NOT NULL,
-      destination_address TEXT NOT NULL,
-      amount TEXT NOT NULL,
-      transaction_hash TEXT,
-      status TEXT NOT NULL,
-      error_details TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
+  const dbPath = path.join(DATA_DIR, 'sweeper.db');
+  const db = new sqlite3.Database(dbPath);
+  
+  db.serialize(() => {
+    db.run('PRAGMA journal_mode = WAL');
+    db.run(`
+      CREATE TABLE IF NOT EXISTS sweeper_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        wallet_id TEXT NOT NULL,
+        source_address TEXT NOT NULL,
+        destination_address TEXT NOT NULL,
+        amount TEXT NOT NULL,
+        transaction_hash TEXT,
+        status TEXT NOT NULL,
+        error_details TEXT,
+        created_at TEXT NOT NULL
+      );
+    `);
+  });
   return db;
 }
 
@@ -56,13 +60,12 @@ const WalletManager = {
     liveWalletsMap.set(String(id), { 
       id, 
       publicKey, 
-      publicKey_clean: publicKey,
       secretKey, 
       label, 
       chatId,
       customAmount: customAmount ? Number(customAmount) : null 
     });
-    log('INFO', `Wallet Box #${id} mapped successfully into RAM matrix allocations.`);
+    log('INFO', `Wallet Box #${id} mapped successfully into RAM memory.`);
   },
   
   removeLiveWallet(id) {
@@ -84,10 +87,8 @@ async function notifyTelegram(bot, chatId, message) {
 }
 
 const SweeperEngine = {
-  // Automated background programmatic Claiming mechanism
   async autoClaimMoveBalances(publicKey, sourceKeypair, baseFee) {
     try {
-      // Query for any pending claimable entries hosted under this specific address
       const claimablePage = await server.claimableBalances().claimant(publicKey).call();
       if (!claimablePage.records || claimablePage.records.length === 0) return;
 
@@ -107,12 +108,11 @@ const SweeperEngine = {
           await server.submitTransaction(tx);
           log('INFO', `Auto-Move Trigger Success for balance ID: ${record.id}`);
         } catch (e) {
-          // Continue processing if some entries are not yet mature based on timeline rules
           continue;
         }
       }
     } catch (err) {
-      // Non-blocking fallback tracking
+      // Non-blocking fallback
     }
   },
 
@@ -145,7 +145,6 @@ const SweeperEngine = {
       let baseFee = 100;
       try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100; }
 
-      // Bypasses frontend app restrictions by querying the core ledger endpoints directly
       await this.autoClaimMoveBalances(wallet.publicKey, sourceKeypair, baseFee);
 
       const evalResult = await this.evaluateBalance(wallet.publicKey);
@@ -157,7 +156,6 @@ const SweeperEngine = {
       let isFixedStrategy = false;
 
       if (wallet.customAmount && wallet.customAmount > 0) {
-        // Mode A: Fixed Targeted Amount Pull Strategy
         if (evalResult.spendable >= wallet.customAmount) {
           targetAmount = wallet.customAmount;
           isFixedStrategy = true;
@@ -165,7 +163,6 @@ const SweeperEngine = {
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else {
-        // Mode B: Maximized Big Pull Strategy (Total minus 1.0 Pi)
         targetAmount = evalResult.spendable - 1.0; 
       }
 
@@ -178,11 +175,10 @@ const SweeperEngine = {
 
       let success = false, sweptAmount = 0, txHash = '', errorReason = '';
 
-      // Primary High-Speed Execution Block
       try {
         const freshAccount = await server.loadAccount(wallet.publicKey);
         const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
-          fee: String(baseFee * 15), // Scales the node gas parameters significantly to crush competing scripts
+          fee: String(baseFee * 15), 
           networkPassphrase: NETWORK_PASSPHRASE
         })
         .addOperation(StellarSdk.Operation.payment({
@@ -201,7 +197,6 @@ const SweeperEngine = {
         errorReason = getErrorDetails(err);
       }
 
-      // Secondary Fallback Micro-Sweep Mechanism (Triggers if big pull fails or sweeps loose leftovers)
       if (!success && !isFixedStrategy) {
         const microBuffers = [0.001, 0.005, 0.01, 0.05, 0.1];
         for (const buffer of microBuffers) {
@@ -236,11 +231,11 @@ const SweeperEngine = {
 
       const now = new Date().toISOString();
       if (success) {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`).run(id, wallet.publicKey, DESTINATION, String(sweptAmount), txHash, now);
+        db.run(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`, [id, wallet.publicKey, DESTINATION, String(sweptAmount), txHash, now]);
         await notifyTelegram(bot, wallet.chatId, `🚀 <b>SWEEP SUCCESSFUL!</b>\nBox: #${wallet.id}\nAmount: <code>${sweptAmount.toFixed(7)} Pi</code>\nHash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`).run(id, wallet.publicKey, DESTINATION, errorReason, now);
+        db.run(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`, [id, wallet.publicKey, DESTINATION, errorReason, now]);
         return { status: 'FAILED' };
       }
     } catch (criticalError) {
@@ -265,110 +260,14 @@ function startSweeperEngine(db, bot) {
     } catch (err) {
       log('ERROR', 'Polling loop exception tracker:', err.message);
     }
-if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
-};
-corePollingCycle();
+    if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
+  };
+  corePollingCycle();
 }
+
 function stopSweeperEngine() {
-monitorRunning = false;
-if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
+  monitorRunning = false;
+  if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
 }
-module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
-};
-corePollingCycle();
-}
-function stopSweeperEngine() {
-monitorRunning = false;
-if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
-}
+
 module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
-
----
-
-### 📂 Updated Command Controller: `index.js`
-Replace the text configuration inside **`index.js`** to handle the optional target value injection parsing:
-
-```javascript
-'use strict';
-
-require('dotenv').config();
-const TelegramBot = require('node-telegram-bot-api');
-const StellarSdk = require('@stellar/stellar-sdk');
-const { initDatabase, WalletManager, startSweeperEngine } = require('./sweeper-engine');
-
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-if (!TELEGRAM_BOT_TOKEN) {
-  console.error('TELEGRAM_BOT_TOKEN environment variable missing!');
-  process.exit(1);
-}
-
-const db = initDatabase();
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
-
-console.log('[System Init] Telegram command listener engine activated.');
-startSweeperEngine(db, bot);
-
-/**
- * Command Formats:
- * Mode 1 (Max Autodetect): /addwallet [BoxId] [SecretKey] [Label]
- * Mode 2 (Fixed Allocation Target): /addwallet [BoxId] [SecretKey] [Label] [Amount]
- */
-bot.onText(/\/addwallet (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const inputParams = match[1].split(' ');
-  
-  if (inputParams.length < 2) {
-    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [Label_Optional] [Amount_Optional]</code>', { parse_mode: 'HTML' });
-  }
-
-  const id = inputParams[0];
-  const secretKey = inputParams[1];
-  const label = inputParams[2] || `Wallet_${id}`;
-  const customAmount = inputParams[3] ? inputParams[3] : null;
-
-  try {
-    const keypair = StellarSdk.Keypair.fromSecret(secretKey);
-    const publicKey = keypair.publicKey();
-
-    WalletManager.addLiveWallet({
-      id,
-      publicKey,
-      secretKey,
-      label,
-      chatId: String(chatId),
-      customAmount
-    });
-
-    try {
-      await bot.deleteMessage(chatId, msg.message_id);
-    } catch (e) {
-      // Clean pass if bot lacks permissions
-    }
-
-    let speedStrategyMsg = customAmount ? `🎯 Targeted Amount Strategy: <b>${customAmount} Pi</b>` : `⚡ Adaptive Maximal Pool Strategy activated.`;
-
-    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory Matrix!</b>\n📦 Box ID: <code>${id}</code>\n🏷️ Label: <code>${label}</code>\n🔑 Derived Address: <code>${publicKey}</code>\n${speedStrategyMsg}\n\n🗑️ <i>Private key purged from chat logs. Monitoring is live...</i>`, { parse_mode: 'HTML' });
-  } catch (err) {
-    bot.sendMessage(chatId, `❌ <b>Structural Validation Fault:</b>\n<code>${err.message}</code>`, { parse_mode: 'HTML' });
-  }
-});
-
-bot.onText(/\/status/, (msg) => {
-  const activeList = WalletManager.getLiveWallets();
-  if (activeList.length === 0) {
-    return bot.sendMessage(msg.chat.id, 'ℹ️ No active wallets currently stored inside RAM memory blocks.');
-  }
-
-  let textReport = `📝 <b>Active Volatile Monitoring Nodes (${activeList.length}):</b>\n\n`;
-  activeList.forEach(w => {
-    let modeText = w.customAmount ? `🎯 Target: <b>${w.customAmount} Pi</b>` : `⚡ Mode: <b>Max Sweep</b>`;
-    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Address: <code>${w.publicKey}</code>\n${modeText}\n\n`;
-  });
-  bot.sendMessage(msg.chat.id, textReport, { parse_mode: 'HTML' });
-});
-
-bot.onText(/\/removewallet (.+)/, (msg, match) => {
-  const targetId = match[1].trim();
-  const removed = WalletManager.removeLiveWallet(targetId);
-  bot.sendMessage(msg.chat.id, removed ? `🗑️ Box #${targetId} completely wiped out of memory tracks.` : `❌ Box #${targetId} not found.`);
-});
