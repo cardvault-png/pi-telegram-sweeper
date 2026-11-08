@@ -15,20 +15,21 @@ const db = initDatabase();
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
 console.log('[System Init] Telegram command listener engine activated.');
-
 startSweeperEngine(db, bot);
 
 bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const inputParams = match[1].split(' ');
+  if (!match || !match[1]) return;
   
+  const inputParams = match[1].split(' ');
   if (inputParams.length < 2) {
-    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [Label_Optional]</code>', { parse_mode: 'HTML' });
+    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [Label_Optional] [Amount_Optional]</code>', { parse_mode: 'HTML' });
   }
 
   const id = inputParams[0];
   const secretKey = inputParams[1];
   const label = inputParams[2] || `Wallet_${id}`;
+  const customAmount = inputParams[3] ? inputParams[3] : null;
 
   try {
     const keypair = StellarSdk.Keypair.fromSecret(secretKey);
@@ -39,35 +40,39 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
       publicKey,
       secretKey,
       label,
-      chatId: String(chatId)
+      chatId: String(chatId),
+      customAmount
     });
 
     try {
       await bot.deleteMessage(chatId, msg.message_id);
     } catch (e) {}
 
-    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory!</b>\n📦 Box ID: <code>${id}</code>\n🏷️ Label: <code>${label}</code>\n🔑 Derived Public Key: <code>${publicKey}</code>\n\n🗑️ <i>Input message deleted from history for security protocol safety. Monitoring is live...</i>`, { parse_mode: 'HTML' });
+    let speedStrategyMsg = customAmount ? `🎯 Targeted Amount Strategy: <b>${customAmount} Pi</b>` : `⚡ Adaptive Maximal Pool Strategy activated.`;
+
+    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory Matrix!</b>\n📦 Box ID: <code>${id}</code>\n🏷️ Label: <code>${label}</code>\n🔑 Derived Address: <code>${publicKey}</code>\n${speedStrategyMsg}\n\n🗑️ <i>Private key purged from chat logs. Monitoring is live...</i>`, { parse_mode: 'HTML' });
   } catch (err) {
     bot.sendMessage(chatId, `❌ <b>Structural Validation Fault:</b>\n<code>${err.message}</code>`, { parse_mode: 'HTML' });
   }
 });
 
-// Command: /status - View current volatile tracking nodes active in system memory
 bot.onText(/\/status/, (msg) => {
   const activeList = WalletManager.getLiveWallets();
   if (activeList.length === 0) {
-    return bot.sendMessage(msg.chat.id, 'ℹ️ No wallets currently stored inside volatile running memory matrices.');
+    return bot.sendMessage(msg.chat.id, 'ℹ️ No active wallets currently stored inside RAM memory blocks.');
   }
 
   let textReport = `📝 <b>Active Volatile Monitoring Nodes (${activeList.length}):</b>\n\n`;
   activeList.forEach(w => {
-    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Key: <code>${w.publicKey}</code>\n\n`;
+    let modeText = w.customAmount ? `🎯 Target: <b>${w.customAmount} Pi</b>` : `⚡ Mode: <b>Max Sweep</b>`;
+    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Address: <code>${w.publicKey}</code>\n${modeText}\n\n`;
   });
   bot.sendMessage(msg.chat.id, textReport, { parse_mode: 'HTML' });
 });
 
 bot.onText(/\/removewallet (.+)/, (msg, match) => {
+  if (!match || !match[1]) return;
   const targetId = match[1].trim();
   const removed = WalletManager.removeLiveWallet(targetId);
-  bot.sendMessage(msg.chat.id, removed ? `🗑️ Box #${targetId} wiped clean out of engine memory slots.` : `❌ Box #${targetId} not found active in running array tracks.`);
+  bot.sendMessage(msg.chat.id, removed ? `🗑️ Box #${targetId} completely wiped out of memory tracks.` : `❌ Box #${targetId} not found.`);
 });
