@@ -21,6 +21,7 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   if (!match || !match[1]) return;
   
+  // ✅ FIX: Correctly targets the text capture string group array index
   const inputParams = match[1].split(' ');
   if (inputParams.length < 2) {
     return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [TargetAddress_Optional] [Label_Optional] [Amount_Optional]</code>', { parse_mode: 'HTML' });
