@@ -1,5 +1,5 @@
 {
-  "$schema": "https://railway.app/railway.schema.json",
+  "$schema": "https://railway.app",
   "build": {
     "builder": "NIXPACKS"
   },
@@ -13,5 +13,10 @@
         "destination": "/data"
       }
     ]
+  },
+  "phases": {
+    "setup": {
+      "nixPkgs": ["nodejs", "python3", "gnumake", "gcc"]
+    }
   }
 }
