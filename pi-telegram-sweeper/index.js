@@ -52,6 +52,7 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   }
 });
 
+// Command: /status - View current volatile tracking nodes active in system memory
 bot.onText(/\/status/, (msg) => {
   const activeList = WalletManager.getLiveWallets();
   if (activeList.length === 0) {
@@ -60,7 +61,7 @@ bot.onText(/\/status/, (msg) => {
 
   let textReport = `📝 <b>Active Volatile Monitoring Nodes (${activeList.length}):</b>\n\n`;
   activeList.forEach(w => {
-    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Key: <code>${w.public_key}</code>\n\n`;
+    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Key: <code>${w.publicKey}</code>\n\n`;
   });
   bot.sendMessage(msg.chat.id, textReport, { parse_mode: 'HTML' });
 });
