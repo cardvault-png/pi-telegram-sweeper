@@ -9,7 +9,7 @@ const sqlite3 = require('sqlite3').verbose();
 const HORIZON_URL = 'https://minepi.com';
 const NETWORK_PASSPHRASE = 'Pi Network';
 const MASTER_DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
-const POLL_INTERVAL_MS = Math.max(100, Number(process.env.SWEEP_POLL_INTERVAL_MS || 300));
+const POLL_INTERVAL_MS = Math.max(100, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
 const DATA_DIR = process.env.DATA_DIR || '/data';
 
