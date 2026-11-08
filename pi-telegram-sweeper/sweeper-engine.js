@@ -217,7 +217,7 @@ const SweeperEngine = {
       }
 
       if (!success && !isFixedStrategy) {
-        const microBuffers = [0.001, 0.002, 0.005, 0.01, 0.05, 0.1];
+         const microBuffers = [0.001, 0.002, 0.005, 0.01, 0.05, 0.1];
         for (const buffer of microBuffers) {
           const fallbackAmount = currentAvailable - buffer;
           if (fallbackAmount <= 0) continue;
@@ -233,7 +233,8 @@ const SweeperEngine = {
               asset: StellarSdk.Asset.native(),
               amount: fallbackAmount.toFixed(7)
             }))
-            .setTimeout(15).build();
+            .setTimeout(15)
+            .build();
 
             transaction.sign(sourceKeypair);
             const response = await server.submitTransaction(transaction);
@@ -253,55 +254,59 @@ const SweeperEngine = {
         const remainingPool = Math.max(0, currentAvailable - sweptAmount);
         db.run(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`, [id, wallet.publicKey, activeDestination, String(sweptAmount), txHash, now]);
         
-        await notifyTelegram(bot, wallet.chatId, 
+        await bot.sendMessage(wallet.chatId, 
           `🚀 <b>TRANSFER SUCCESSFUL!</b>\n\n` +
           `📦 <b>Box ID:</b> #${wallet.id}\n` +
+          `🔑 <b>Source Address:</b> <code>${wallet.publicKey}</code>\n` +
+          `📥 <b>Route Target:</b> <code>${activeDestination}</code>\n` +
           `💰 <b>Swept Amount:</b> <code>${sweptAmount.toFixed(7)} Pi</code>\n` +
           `📉 <b>Remaining Pool:</b> <code>${remainingPool.toFixed(7)} Pi</code>\n` +
           `🔗 <b>Tx Hash:</b> <code>${txHash}</code>`
         );
+        wallet.lastMessageId = null;
       } else {
         db.run(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`, [id, wallet.publicKey, activeDestination, errorReason, now]);
         
-        await notifyTelegram(bot, wallet.chatId, 
-          `⚠️ <b>TRANSFER UNSUCCESSFUL</b>\n` +
-          `📦 Box ID: #${wallet.id}\n` +
-          `❌ Error Details: <code>${errorReason}</code>\n` +
-          `🔄 <i>Retrying operation immediately...</i>`
-        );
+        const failBoardText = 
+          `⚠️ <b>TRANSFER DELAY NOTICE</b>\n` +
+          `📦 <b>Box ID:</b> #${wallet.id}\n` +
+          `💰 Pool Balance: <code>${currentAvailable.toFixed(7)} Pi</code>\n` +
+          `❌ Error Rejection: <code>${errorReason}</code>\n\n` +
+          `🔄 <i>Engine is looping and retrying signature loops instantly...</i>`;
+        
+        await updateStatusBoard(bot, wallet, failBoardText);
       }
-          `📦 Box ID: #${wallet.id}\n` +
-          `❌ Error Details: <code>${errorReason}</code>\n` +
-          `🔄 <i>Retrying operation immediately...</i>`
-        );
-      }
-Use code with caution.
-} catch (criticalError) {
-log('ERROR', Loop Failure on Box #${id}, criticalError.message);
-} finally {
-walletLocks.delete(id);
-}
-}
+    } catch (criticalError) {
+      log('ERROR', `Loop Failure on Box #${id}`, criticalError.message);
+    } finally {
+      walletLocks.delete(id);
+    }
+  }
 };
+
 function startSweeperEngine(db, bot) {
-if (monitorRunning) return;
-monitorRunning = true;
-const corePollingCycle = async () => {
-if (!monitorRunning) return;
-try {
-const wallets = WalletManager.getLiveWallets();
-for (const wallet of wallets) {
-await SweeperEngine.executeInstantSweep(db, bot, wallet);
+  if (monitorRunning) return;
+  monitorRunning = true;
+  log('INFO', `Dynamic Status Interface tracking daemon enabled.`);
+
+  const corePollingCycle = async () => {
+    if (!monitorRunning) return;
+    try {
+      const wallets = WalletManager.getLiveWallets();
+      for (const wallet of wallets) {
+        await SweeperEngine.executeInstantSweep(db, bot, wallet);
+      }
+    } catch (err) {
+      log('ERROR', 'Loop error context:', err.message);
+    }
+    if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
+  };
+  corePollingCycle();
 }
-} catch (err) {
-log('ERROR', 'Loop error context:', err.message);
-}
-if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
-};
-corePollingCycle();
-}
+
 function stopSweeperEngine() {
-monitorRunning = false;
-if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
+  monitorRunning = false;
+  if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
 }
+
 module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
