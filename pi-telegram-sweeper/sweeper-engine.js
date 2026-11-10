@@ -1,6 +1,5 @@
 'use strict';
 
-const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
 
 const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
@@ -14,9 +13,9 @@ const walletLocks = new Set();
 let monitorRunning = false;
 let monitorTimeoutId = null;
 
-// IN-MEMORY STORAGE (RAM) - Keys and transaction history stored securely in RAM
 const liveWalletsMap = new Map();
-const transactionHistory = [];
+// Store active dashboard message IDs per chat so we edit instead of spamming
+const dashboardRegistry = new Map(); // chatId -> { statusMsgId, ledgerMsgId, history: [] }
 
 function getErrorDetails(error) {
   if (error?.response?.data?.extras?.result_codes) {
@@ -31,11 +30,10 @@ function log(level, message, details) {
 }
 
 function initDatabase() {
-  log('INFO', 'In-memory transaction audit registry initialized successfully.');
+  log('INFO', 'In-memory dashboard registry initialized successfully.');
   return {
     logTransaction(record) {
-      transactionHistory.push(record);
-      if (transactionHistory.length > 500) transactionHistory.shift(); // keep last 500 in memory
+      // Handled via dashboard ledger feed
     }
   };
 }
@@ -65,12 +63,62 @@ const WalletManager = {
   }
 };
 
-async function notifyTelegram(bot, chatId, message) {
+async function updateDashboard(bot, chatId, wallet, balanceInfo, lastActionText) {
   if (!bot || !chatId) return;
+
+  let dash = dashboardRegistry.get(chatId);
+  if (!dash) {
+    dash = { statusMsgId: null, ledgerMsgId: null, history: [] };
+    dashboardRegistry.set(chatId, dash);
+  }
+
+  if (lastActionText) {
+    dash.history.unshift(lastActionText);
+    if (dash.history.length > 20) dash.history.pop(); // keep last 20 entries scrollable
+  }
+
+  const statusText = `📊 <b>PI SWEEPER LIVE DASHBOARD</b>
+━━━━━━━━━━━━━━━━━━━
+📦 <b>Box ID:</b> #${wallet.id}
+🏷️ <b>Label:</b> <code>${wallet.label}</code>
+🔑 <b>Public Key:</b> <code>${wallet.publicKey || wallet.public_key}</code>
+💰 <b>Spendable Balance:</b> <code>${balanceInfo.spendable.toFixed(7)} Pi</code>
+⚡ <b>Status:</b> 🟢 Active 500ms Polling
+━━━━━━━━━━━━━━━━━━━`;
+
+  const ledgerContent = dash.history.length > 0 
+    ? dash.history.join('\n\n') 
+    : '<i>No sweep actions recorded yet. Monitoring pool...</i>';
+
+  const ledgerText = `📜 <b>SCROLLABLE AUDIT LEDGER (Box #${wallet.id})</b>
+━━━━━━━━━━━━━━━━━━━
+${ledgerContent}
+━━━━━━━━━━━━━━━━━━━`;
+
   try {
-    await bot.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
-  } catch (error) {
-    log('ERROR', 'Telegram notification dispatch failed', error.message);
+    // Update or create Status Box
+    if (!dash.statusMsgId) {
+      const msg = await bot.sendMessage(chatId, statusText, { parse_mode: 'HTML' });
+      dash.statusMsgId = msg.message_id;
+    } else {
+      await bot.editMessageText(statusText, { chat_id: chatId, message_id: dash.statusMsgId, parse_mode: 'HTML' }).catch(async () => {
+        const msg = await bot.sendMessage(chatId, statusText, { parse_mode: 'HTML' });
+        dash.statusMsgId = msg.message_id;
+      });
+    }
+
+    // Update or create Ledger Box
+    if (!dash.ledgerMsgId) {
+      const msg = await bot.sendMessage(chatId, ledgerText, { parse_mode: 'HTML' });
+      dash.ledgerMsgId = msg.message_id;
+    } else {
+      await bot.editMessageText(ledgerText, { chat_id: chatId, message_id: dash.ledgerMsgId, parse_mode: 'HTML' }).catch(async () => {
+        const msg = await bot.sendMessage(chatId, ledgerText, { parse_mode: 'HTML' });
+        dash.ledgerMsgId = msg.message_id;
+      });
+    }
+  } catch (err) {
+    log('ERROR', 'Dashboard render error', err.message);
   }
 }
 
@@ -109,16 +157,19 @@ const SweeperEngine = {
       try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100; }
 
       const evalResult = await this.evaluateBalance(pubKey);
+      
+      // Always update the live status box so you see current balance without spamming
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
+        await updateDashboard(bot, chatTarget, wallet, evalResult, null);
         return { status: 'NO_SWEEPABLE_FUNDS' };
       }
 
       let targetAmount = 0;
-
       if (wallet.customAmount && wallet.customAmount > 0) {
         if (evalResult.spendable >= wallet.customAmount) {
           targetAmount = wallet.customAmount;
         } else {
+          await updateDashboard(bot, chatTarget, wallet, evalResult, null);
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else if (evalResult.spendable > 1.0) {
@@ -128,13 +179,12 @@ const SweeperEngine = {
       }
 
       if (targetAmount <= MIN_THRESHOLD) {
+        await updateDashboard(bot, chatTarget, wallet, evalResult, null);
         return { status: 'POOL_EXHAUSTED' };
       }
 
-      log('INFO', `Wallet Box #${id} executing sweep target: ${targetAmount} Pi (Spendable: ${evalResult.spendable} Pi).`);
-      await notifyTelegram(bot, chatTarget, `🔍 <b>SWEEP TRIGGERED IN RAM!</b>\nBox: #${wallet.id}\nTarget Draw: <code>${targetAmount.toFixed(7)} Pi</code>`);
-
       let success = false, sweptAmount = 0, txHash = '', errorReason = '';
+      let remainingBalance = evalResult.spendable - targetAmount;
 
       try {
         const freshAccount = await server.loadAccount(pubKey);
@@ -152,21 +202,22 @@ const SweeperEngine = {
         transaction.sign(sourceKeypair);
         const response = await server.submitTransaction(transaction);
         sweptAmount = targetAmount;
-        // Fix: correctly grab transaction hash from response
         txHash = response.hash || response.result?.hash || response.id || 'Submitted Successfully';
         success = true;
       } catch (err) {
         errorReason = getErrorDetails(err);
       }
 
-      const now = new Date().toISOString();
+      const timeStr = new Date().toLocaleTimeString();
+      let actionLog = '';
+
       if (success) {
-        db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
-        await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP SUCCESSFUL!</b>\nBox: #${wallet.id}\nAmount: <code>${sweptAmount.toFixed(7)} Pi</code>\nHash: <code>${txHash}</code>`);
+        actionLog = `🚀 [${timeStr}] <b>SWEEP SUCCESS</b>\n• Swept: <code>${sweptAmount.toFixed(7)} Pi</code>\n• Remaining: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n• Hash: <code>${txHash}</code>`;
+        await updateDashboard(bot, chatTarget, wallet, { spendable: remainingBalance }, actionLog);
         return { status: 'SUCCESS' };
       } else {
-        db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
-        await notifyTelegram(bot, chatTarget, `⚠️ <b>SWEEP FAILURE</b>\nBox: #${wallet.id}\nError: <code>${errorReason}</code>`);
+        actionLog = `⚠️ [${timeStr}] <b>SWEEP FAILED</b>\n• Error: <code>${errorReason}</code>`;
+        await updateDashboard(bot, chatTarget, wallet, evalResult, actionLog);
         return { status: 'FAILED' };
       }
     } catch (criticalError) {
@@ -186,7 +237,7 @@ function startSweeperEngine(db, bot) {
     try {
       const wallets = WalletManager.getLiveWallets();
       for (const wallet of wallets) {
-        await SweeperEngine.executeInstantSweep(db, bot, wallet);
+        await SweeperEngine.executeInstantSwipe(db, bot, wallet);
       }
     } catch (err) {
       log('ERROR', 'Polling loop track exception', err.message);
@@ -201,4 +252,4 @@ function stopSweeperEngine() {
   if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
 }
 
-module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
+module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine };
