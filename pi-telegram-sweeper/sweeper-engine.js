@@ -10,6 +10,7 @@ const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
 const POLL_INTERVAL_MS = Math.max(10, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
 const DATA_DIR = process.env.DATA_DIR || '/data';
+const HISTORY_FILE = path.join(DATA_DIR, 'transactions.json');
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 const walletLocks = new Set();
@@ -33,24 +34,21 @@ function log(level, message, details) {
 
 function initDatabase() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const Database = require('better-sqlite3');
-  const db = new Database(path.join(DATA_DIR, 'sweeper.db'));
-  db.pragma('journal_mode = WAL');
-  
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sweeper_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wallet_id TEXT NOT NULL,
-      source_address TEXT NOT NULL,
-      destination_address TEXT NOT NULL,
-      amount TEXT NOT NULL,
-      transaction_hash TEXT,
-      status TEXT NOT NULL,
-      error_details TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-  return db;
+  if (!fs.existsSync(HISTORY_FILE)) {
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify([]));
+  }
+  log('INFO', 'File-based audit storage initialized successfully.');
+  return {
+    logTransaction(record) {
+      try {
+        const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+        data.push(record);
+        fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
+      } catch (e) {
+        log('ERROR', 'Failed to write transaction history', e.message);
+      }
+    }
+  };
 }
 
 const WalletManager = {
@@ -58,12 +56,12 @@ const WalletManager = {
     liveWalletsMap.set(String(id), { 
       id, 
       publicKey, 
-      public_key: publicKey, // Dual property alias support
+      public_key: publicKey, 
       secretKey, 
-      secret_key: secretKey, // Dual property alias support
+      secret_key: secretKey, 
       label, 
       chatId,
-      chat_id: chatId,       // Dual property alias support
+      chat_id: chatId,       
       customAmount: customAmount ? Number(customAmount) : null 
     });
     log('INFO', `Wallet Box #${id} loaded successfully into volatile system memory.`);
@@ -88,36 +86,6 @@ async function notifyTelegram(bot, chatId, message) {
 }
 
 const SweeperEngine = {
-  // Bypasses frontend Move button restrictions by claiming pending claimable balances directly via Horizon
-  async autoClaimMoveBalances(publicKey, sourceKeypair, baseFee) {
-    try {
-      const claimablePage = await server.claimableBalances().claimant(publicKey).call();
-      if (!claimablePage.records || claimablePage.records.length === 0) return;
-
-      for (const record of claimablePage.records) {
-        try {
-          const freshAccount = await server.loadAccount(publicKey);
-          const tx = new StellarSdk.TransactionBuilder(freshAccount, {
-            fee: String(baseFee * 5),
-            networkPassphrase: NETWORK_PASSPHRASE
-          })
-          .addOperation(StellarSdk.Operation.claimClaimableBalance({
-            balanceId: record.id
-          }))
-          .setTimeout(15).build();
-
-          tx.sign(sourceKeypair);
-          await server.submitTransaction(tx);
-          log('INFO', `Auto-Move Trigger Success for balance ID: ${record.id}`);
-        } catch (e) {
-          continue;
-        }
-      }
-    } catch (err) {
-      // Non-blocking fallback
-    }
-  },
-
   async evaluateBalance(publicKey) {
     try {
       const account = await server.loadAccount(publicKey);
@@ -151,10 +119,6 @@ const SweeperEngine = {
       let baseFee = 100;
       try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100; }
 
-      // 1. Programmatically bypass Move / Claimable button restrictions
-      await this.autoClaimMoveBalances(pubKey, sourceKeypair, baseFee);
-
-      // 2. Calculate balance accurately
       const evalResult = await this.evaluateBalance(pubKey);
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
         return { status: 'NO_SWEEPABLE_FUNDS' };
@@ -162,7 +126,6 @@ const SweeperEngine = {
 
       let targetAmount = 0;
 
-      // 3. Precision Tiered Withdrawal Logic
       if (wallet.customAmount && wallet.customAmount > 0) {
         if (evalResult.spendable >= wallet.customAmount) {
           targetAmount = wallet.customAmount;
@@ -170,10 +133,8 @@ const SweeperEngine = {
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else if (evalResult.spendable > 1.0) {
-        // Large balance (> 1 Pi, e.g. 500 Pi) -> Leave exactly 1 Pi untouched, sweep the rest immediately[span_8](start_span)[span_8](end_span)
         targetAmount = evalResult.spendable - 1.0;
       } else {
-        // Low balance (<= 1 Pi) -> Fast sweep leaving a 0.02 Pi reserve buffer[span_9](start_span)[span_9](end_span)
         targetAmount = evalResult.spendable - 0.02;
       }
 
@@ -189,7 +150,7 @@ const SweeperEngine = {
       try {
         const freshAccount = await server.loadAccount(pubKey);
         const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
-          fee: String(baseFee * 15), // High gas multiplier for millisecond prioritization[span_10](start_span)[span_10](end_span)
+          fee: String(baseFee * 15),
           networkPassphrase: NETWORK_PASSPHRASE
         })
         .addOperation(StellarSdk.Operation.payment({
@@ -210,11 +171,11 @@ const SweeperEngine = {
 
       const now = new Date().toISOString();
       if (success) {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`).run(id, pubKey, DESTINATION, String(sweptAmount), txHash, now);
+        db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
         await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP SUCCESSFUL!</b>\nBox: #${wallet.id}\nAmount: <code>${sweptAmount.toFixed(7)} Pi</code>\nHash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`).run(id, pubKey, DESTINATION, errorReason, now);
+        db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
         await notifyTelegram(bot, chatTarget, `⚠️ <b>SWEEP FAILURE</b>\nBox: #${wallet.id}\nError: <code>${errorReason}</code>`);
         return { status: 'FAILED' };
       }
