@@ -18,11 +18,6 @@ console.log('[System Init] Telegram command listener engine activated.');
 
 startSweeperEngine(db, bot);
 
-/**
- * Command Formats:
- * Mode 1 (Tiered Auto Strategy): /addwallet [BoxId] [SecretKey] [Label_Optional]
- * Mode 2 (Fixed Custom Amount):  /addwallet [BoxId] [SecretKey] [Label_Optional] [CustomAmount]
- */
 bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const inputParams = match[1].split(' ');
@@ -63,7 +58,6 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   }
 });
 
-// Command: /status - View current volatile tracking nodes active in system memory
 bot.onText(/\/status/, (msg) => {
   const activeList = WalletManager.getLiveWallets();
   if (activeList.length === 0) {
