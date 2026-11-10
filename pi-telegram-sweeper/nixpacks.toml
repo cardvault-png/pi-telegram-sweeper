@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_22", "python3", "gcc", "gnumake", "sqlite"]
 
 [phases.build]
-cmds = ["npm install"]
+cmds = ["npm install", "npm rebuild better-sqlite3"]
 
 [start]
 cmd = "npm start"
