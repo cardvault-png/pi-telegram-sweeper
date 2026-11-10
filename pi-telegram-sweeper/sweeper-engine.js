@@ -160,14 +160,12 @@ const SweeperEngine = {
         }))
         .setTimeout(15).build();
 
-        transaction.sign(sourceKeypair);
+                transaction.sign(sourceKeypair);
         const response = await server.submitTransaction(transaction);
         sweptAmount = targetAmount;
-        txHash = response.hash;
+        // Fix: check multiple response formats for the hash
+        txHash = response.hash || response.result?.hash || response.id || 'Submitted Successfully';
         success = true;
-      } catch (err) {
-        errorReason = getErrorDetails(err);
-      }
 
       const now = new Date().toISOString();
       if (success) {
