@@ -1,6 +1,5 @@
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
 
@@ -9,16 +8,15 @@ const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network
 const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
 const POLL_INTERVAL_MS = Math.max(10, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
-const DATA_DIR = process.env.DATA_DIR || '/data';
-const HISTORY_FILE = path.join(DATA_DIR, 'transactions.json');
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 const walletLocks = new Set();
 let monitorRunning = false;
 let monitorTimeoutId = null;
 
-// IN-MEMORY STORAGE (RAM) - Keys are never saved to disk
+// IN-MEMORY STORAGE (RAM) - Keys and transaction history stored securely in RAM
 const liveWalletsMap = new Map();
+const transactionHistory = [];
 
 function getErrorDetails(error) {
   if (error?.response?.data?.extras?.result_codes) {
@@ -33,20 +31,11 @@ function log(level, message, details) {
 }
 
 function initDatabase() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(HISTORY_FILE)) {
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify([]));
-  }
-  log('INFO', 'File-based audit storage initialized successfully.');
+  log('INFO', 'In-memory transaction audit registry initialized successfully.');
   return {
     logTransaction(record) {
-      try {
-        const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-        data.push(record);
-        fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
-      } catch (e) {
-        log('ERROR', 'Failed to write transaction history', e.message);
-      }
+      transactionHistory.push(record);
+      if (transactionHistory.length > 500) transactionHistory.shift(); // keep last 500 in memory
     }
   };
 }
@@ -160,12 +149,15 @@ const SweeperEngine = {
         }))
         .setTimeout(15).build();
 
-                transaction.sign(sourceKeypair);
+        transaction.sign(sourceKeypair);
         const response = await server.submitTransaction(transaction);
         sweptAmount = targetAmount;
-        // Fix: check multiple response formats for the hash
+        // Fix: correctly grab transaction hash from response
         txHash = response.hash || response.result?.hash || response.id || 'Submitted Successfully';
         success = true;
+      } catch (err) {
+        errorReason = getErrorDetails(err);
+      }
 
       const now = new Date().toISOString();
       if (success) {
