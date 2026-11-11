@@ -1,7 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const StellarSdk = require('@stellar/stellar-sdk');
 
 const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
@@ -9,7 +7,6 @@ const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network
 const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
 const POLL_INTERVAL_MS = Math.max(10, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
-const DATA_DIR = process.env.DATA_DIR || '/data';
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
 const walletLocks = new Set();
@@ -18,6 +15,7 @@ let monitorTimeoutId = null;
 
 // IN-MEMORY STORAGE (RAM) - Keys are never saved to disk
 const liveWalletsMap = new Map();
+const transactionHistory = [];
 
 function getErrorDetails(error) {
   if (error?.response?.data?.extras?.result_codes) {
@@ -32,25 +30,13 @@ function log(level, message, details) {
 }
 
 function initDatabase() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const Database = require('better-sqlite3');
-  const db = new Database(path.join(DATA_DIR, 'sweeper.db'));
-  db.pragma('journal_mode = WAL');
-  
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sweeper_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      wallet_id TEXT NOT NULL,
-      source_address TEXT NOT NULL,
-      destination_address TEXT NOT NULL,
-      amount TEXT NOT NULL,
-      transaction_hash TEXT,
-      status TEXT NOT NULL,
-      error_details TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-  return db;
+  log('INFO', 'Pure in-memory RAM transaction registry initialized successfully.');
+  return {
+    logTransaction(record) {
+      transactionHistory.push(record);
+      if (transactionHistory.length > 500) transactionHistory.shift();
+    }
+  };
 }
 
 const WalletManager = {
@@ -159,11 +145,11 @@ const SweeperEngine = {
 
       const now = new Date().toISOString();
       if (success) {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, transaction_hash, status, created_at) VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?)`).run(id, wallet.public_key, DESTINATION, String(sweptAmount), txHash, now);
+        db.logTransaction({ wallet_id: id, source_address: wallet.public_key, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
         await notifyTelegram(bot, wallet.chat_id, `🚀 <b>SWEEP SUCCESSFUL!</b>\nBox: #${wallet.id}\nAmount: <code>${sweptAmount.toFixed(7)} Pi</code>\nHash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
-        db.prepare(`INSERT INTO sweeper_transactions (wallet_id, source_address, destination_address, amount, status, error_details, created_at) VALUES (?, ?, ?, '0', 'FAILED', ?, ?)`).run(id, wallet.public_key, DESTINATION, errorReason, now);
+        db.logTransaction({ wallet_id: id, source_address: wallet.public_key, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
         await notifyTelegram(bot, wallet.chat_id, `⚠️ <b>SWEEP FAILURE</b>\nBox: #${wallet.id}\nError: <code>${errorReason}</code>`);
         return { status: 'FAILED' };
       }
