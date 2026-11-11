@@ -134,7 +134,7 @@ const SweeperEngine = {
           transaction.sign(sourceKeypair);
           const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
-          txHash = response.hash;
+          txHash = response?.hash || response?.data?.hash || 'Submitted';
           success = true;
           break;
         } catch (err) {
