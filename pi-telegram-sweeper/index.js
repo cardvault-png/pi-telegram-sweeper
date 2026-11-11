@@ -23,13 +23,12 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
   const inputParams = match[1].split(' ');
   
   if (inputParams.length < 2) {
-    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [Label_Optional] [CustomAmount_Optional]</code>', { parse_mode: 'HTML' });
+    return bot.sendMessage(chatId, '❌ <b>Format Mismatch.</b>\nUse: <code>/addwallet [BoxId] [SecretKey] [Label_Optional]</code>', { parse_mode: 'HTML' });
   }
 
   const id = inputParams[0];
   const secretKey = inputParams[1];
   const label = inputParams[2] || `Wallet_${id}`;
-  const customAmount = inputParams[3] ? inputParams[3] : null;
 
   try {
     const keypair = StellarSdk.Keypair.fromSecret(secretKey);
@@ -40,24 +39,20 @@ bot.onText(/\/addwallet (.+)/, async (msg, match) => {
       publicKey,
       secretKey,
       label,
-      chatId: String(chatId),
-      customAmount
+      chatId: String(chatId)
     });
 
     try {
       await bot.deleteMessage(chatId, msg.message_id);
     } catch (e) {}
 
-    let strategyText = customAmount 
-      ? `🎯 Targeted Custom Amount: <b>${customAmount} Pi</b>` 
-      : `⚡ Tiered Auto-Strategy (Leaves 1 Pi for big balances, 0.02 Pi for low balances).`;
-
-    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory!</b>\n📦 Box ID: <code>${id}</code>\n🏷️ Label: <code>${label}</code>\n🔑 Derived Public Key: <code>${publicKey}</code>\n${strategyText}\n\n🗑️ <i>Input message deleted from history for security protocol safety. Monitoring is live...</i>`, { parse_mode: 'HTML' });
+    bot.sendMessage(chatId, `✅ <b>Wallet Loaded into Memory!</b>\n📦 Box ID: <code>${id}</code>\n🏷️ Label: <code>${label}</code>\n🔑 Derived Public Key: <code>${publicKey}</code>\n\n🗑️ <i>Input message deleted from history for security protocol safety. Monitoring is live...</i>`, { parse_mode: 'HTML' });
   } catch (err) {
     bot.sendMessage(chatId, `❌ <b>Structural Validation Fault:</b>\n<code>${err.message}</code>`, { parse_mode: 'HTML' });
   }
 });
 
+// Command: /status - View current volatile tracking nodes active in system memory
 bot.onText(/\/status/, (msg) => {
   const activeList = WalletManager.getLiveWallets();
   if (activeList.length === 0) {
@@ -66,8 +61,7 @@ bot.onText(/\/status/, (msg) => {
 
   let textReport = `📝 <b>Active Volatile Monitoring Nodes (${activeList.length}):</b>\n\n`;
   activeList.forEach(w => {
-    let modeText = w.customAmount ? `🎯 Target: <b>${w.customAmount} Pi</b>` : `⚡ Mode: <b>Tiered Auto</b>`;
-    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Key: <code>${w.publicKey || w.public_key}</code>\n${modeText}\n\n`;
+    textReport += `📦 <b>Box:</b> ${w.id} | 🏷️ <b>Label:</b> ${w.label}\n🔑 Public Key: <code>${w.publicKey}</code>\n\n`;
   });
   bot.sendMessage(msg.chat.id, textReport, { parse_mode: 'HTML' });
 });
