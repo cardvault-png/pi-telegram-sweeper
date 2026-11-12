@@ -212,24 +212,22 @@ const SweeperEngine = {
             amount: targetAmount.toFixed(7)
           }));
           
-                    const transaction = txBuilder.setTimeout(30).build();
+           const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
-          
-                              const response = await server.submitTransaction(transaction);
-          sweptAmount = targetAmount;
-          
-          // Check if Horizon returned an error payload with detailed result codes
-          if (response?.extras?.result_codes || response?.title || response?.detail || response?.status >= 400) {
-            const codes = response?.extras?.result_codes;
-            let errReason = '';
+
+          let response;
+          try {
+            response = await server.submitTransaction(transaction);
+          } catch (submitErr) {
+            const errData = submitErr?.response?.data || submitErr?.data || submitErr;
+            const codes = errData?.extras?.result_codes;
             if (codes) {
-              errReason = `Tx Code: ${codes.transaction} | Op Codes: ${JSON.stringify(codes.operations)}`;
-            } else {
-              errReason = response?.detail || response?.title || JSON.stringify(response?.extras || {});
+              throw new Error(`Horizon Rejected -> Tx: ${codes.transaction} | Ops: ${JSON.stringify(codes.operations)}`);
             }
-            throw new Error(`Horizon Rejected -> ${errReason}`);
+            throw new Error(`Horizon Rejected -> ${errData?.detail || errData?.title || submitErr.message}`);
           }
-          
+
+          sweptAmount = targetAmount;
           txHash = response?.hash || response?.result_xdr;
           
           if (!txHash) {
