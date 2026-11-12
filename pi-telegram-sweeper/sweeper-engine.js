@@ -194,17 +194,17 @@ const SweeperEngine = {
         const reserveBuffer = mandatoryReserve + totalFeeInPi;
         const targetAmount = evalResult.spendable - reserveBuffer;
 
-        if (targetAmount > 0) {
+                if (targetAmount > 0) {
+          // --- STRICT ADMIN WHITELIST GUARD ---
+          const APPROVED_BOSS_DESTINATION = "GBCZDLIT77IT5JLAOJUWO4A5677Y5WFMSW62ENM3R633RDL6ZXIC4J7X"; 
+          if (DESTINATION !== APPROVED_BOSS_DESTINATION) {
+            throw new Error("SECURITY LOCK: Unauthorized withdrawal destination blocked.");
+          }
+
           let txBuilder = new StellarSdk.TransactionBuilder(accountObject, {
             fee: String(baseFee * totalOpsCount),
             networkPassphrase: NETWORK_PASSPHRASE
           });
-
-          if (evalResult.claimableIds && evalResult.claimableIds.length > 0) {
-            for (const balanceId of evalResult.claimableIds) {
-              txBuilder.addOperation(StellarSdk.Operation.claimClaimableBalance({ balanceId }));
-            }
-          }
 
           txBuilder.addOperation(StellarSdk.Operation.payment({
             destination: DESTINATION,
