@@ -17,7 +17,7 @@ let monitorTimeoutId = null;
 const liveWalletsMap = new Map();
 const transactionHistory = [];
 
-function getErrorDetails(error) {
+functional getErrorDetails(error) {
   const data = error?.response?.data;
   if (data) {
     if (data.extras && data.extras.result_codes) {
@@ -212,26 +212,20 @@ const SweeperEngine = {
             amount: targetAmount.toFixed(7)
           }));
           
-           const transaction = txBuilder.setTimeout(30).build();
+                     const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
 
-          let response;
-          try {
-            response = await server.submitTransaction(transaction);
-          } catch (submitErr) {
-            const errData = submitErr?.response?.data || submitErr?.data || submitErr;
-            const codes = errData?.extras?.result_codes;
-            if (codes) {
-              throw new Error(`Horizon Rejected -> Tx: ${codes.transaction} | Ops: ${JSON.stringify(codes.operations)}`);
-            }
-            throw new Error(`Horizon Rejected -> ${errData?.detail || errData?.title || submitErr.message}`);
-          }
-
+          const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
+          
           txHash = response?.hash || response?.result_xdr;
           
           if (!txHash) {
-            throw new Error('Transaction submitted but no transaction hash returned.');
+            const resCodes = response?.extras?.result_codes;
+            if (resCodes) {
+              throw new Error(`TX Code: ${resCodes.transaction} | Op Codes: ${JSON.stringify(resCodes.operations)}`);
+            }
+            throw new Error(`No transaction hash returned. Response: ${JSON.stringify(response)}`);
           }
           success = true;
 
