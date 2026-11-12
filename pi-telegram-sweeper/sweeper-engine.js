@@ -284,4 +284,10 @@ function stopSweeperEngine() {
   if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
 }
 
-module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram: notifyTelegramAsync };
+module.exports = { 
+    initDatabase, 
+    WalletManager, 
+    startSweeperEngine, 
+    stopSweeperEngine, 
+    notifyTelegram: notifyTelegramAsync 
+};
