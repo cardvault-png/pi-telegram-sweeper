@@ -211,17 +211,17 @@ const SweeperEngine = {
                     const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
 
-          const response = await server.submitTransaction(transaction);
+                    const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
-          txHash = response?.hash || response?.result_meta_xdr || response?.data?.hash;
-if (!txHash && response) {
-  txHash = response.id || 'Submitted_OK';
-}
-if (!txHash) {
-  throw new Error('Transaction submitted but no transaction hash returned.');
-}
           
+          // Require a valid cryptographic hash from the Pi network
+          txHash = response?.hash || response?.result_xdr;
+          
+          if (!txHash) {
+            throw new Error('Network accepted request but did not return a valid transaction hash.');
+          }
           success = true;
+
         } else {
           errorReason = 'Calculated target amount is below zero after accounting for exact Pi reserves and fees.';
         }
