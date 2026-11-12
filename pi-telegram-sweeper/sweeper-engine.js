@@ -210,17 +210,15 @@ const SweeperEngine = {
           
                     const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
-
-                              const response = await server.submitTransaction(transaction);
+          
+          const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
           
-          // Log the raw response keys/structure to your Railway console logs
-          console.log("RAW HORIZON SUBMIT RESPONSE:", JSON.stringify(response));
-          
-          txHash = response?.hash || response?.tx?.hash || response?.result_xdr || response?.id;
+          // A successful Stellar submission returns a hash directly or inside tx
+          txHash = response?.hash || response?.result_xdr || (response?.data && response.data.hash);
           
           if (!txHash) {
-            throw new Error(`No hash found in response keys: ${Object.keys(response || {}).join(', ')}`);
+            throw new Error('Transaction submitted but no transaction hash returned.');
           }
           success = true;
 
