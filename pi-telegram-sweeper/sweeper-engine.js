@@ -5,7 +5,7 @@ const StellarSdk = require('@stellar/stellar-sdk');
 const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
 const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network';
 const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
-const POLL_INTERVAL_MS = Math.max(500, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
+const POLL_INTERVAL_MS = Math.max(1000, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -211,14 +211,16 @@ const SweeperEngine = {
                     const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
 
-                    const response = await server.submitTransaction(transaction);
+                              const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
           
-          // Require a valid cryptographic hash from the Pi network
-          txHash = response?.hash || response?.result_xdr;
+          // Log the raw response keys/structure to your Railway console logs
+          console.log("RAW HORIZON SUBMIT RESPONSE:", JSON.stringify(response));
+          
+          txHash = response?.hash || response?.tx?.hash || response?.result_xdr || response?.id;
           
           if (!txHash) {
-            throw new Error('Network accepted request but did not return a valid transaction hash.');
+            throw new Error(`No hash found in response keys: ${Object.keys(response || {}).join(', ')}`);
           }
           success = true;
 
