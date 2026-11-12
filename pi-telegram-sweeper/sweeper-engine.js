@@ -215,13 +215,19 @@ const SweeperEngine = {
                     const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
           
-                    const response = await server.submitTransaction(transaction);
+                              const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
           
-          // Check if Horizon returned an error payload instead of a success hash
-          if (response?.title || response?.detail || response?.status >= 400) {
-            const errReason = response.detail || response.title || JSON.stringify(response.extras || {});
-            throw new Error(`Horizon Rejected: ${errReason}`);
+          // Check if Horizon returned an error payload with detailed result codes
+          if (response?.extras?.result_codes || response?.title || response?.detail || response?.status >= 400) {
+            const codes = response?.extras?.result_codes;
+            let errReason = '';
+            if (codes) {
+              errReason = `Tx Code: ${codes.transaction} | Op Codes: ${JSON.stringify(codes.operations)}`;
+            } else {
+              errReason = response?.detail || response?.title || JSON.stringify(response?.extras || {});
+            }
+            throw new Error(`Horizon Rejected -> ${errReason}`);
           }
           
           txHash = response?.hash || response?.result_xdr;
@@ -234,10 +240,14 @@ const SweeperEngine = {
         } else {
           errorReason = 'Calculated target amount is below zero after accounting for exact Pi reserves and fees.';
         }
-            } catch (err) {
-        // Extract exact network rejection details if Horizon returned an error object
-        const horizonData = err?.response?.data || err;
-        errorReason = horizonData?.detail || horizonData?.title || getErrorDetails(err);
+      } catch (err) {
+        const errData = err?.response?.data || err?.data || err;
+        const codes = errData?.extras?.result_codes;
+        if (codes) {
+          errorReason = `Horizon Rejected -> Tx Code: ${codes.transaction} | Op Codes: ${JSON.stringify(codes.operations)}`;
+        } else {
+          errorReason = errData?.detail || errData?.title || err?.message || String(err);
+        }
       }
 
       const now = new Date().toISOString();
