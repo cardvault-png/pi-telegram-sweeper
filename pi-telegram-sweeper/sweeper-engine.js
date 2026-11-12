@@ -230,8 +230,10 @@ const SweeperEngine = {
         } else {
           errorReason = 'Calculated target amount is below zero after accounting for exact Pi reserves and fees.';
         }
-      } catch (err) {
-        errorReason = getErrorDetails(err);
+            } catch (err) {
+        // Extract exact network rejection details if Horizon returned an error object
+        const horizonData = err?.response?.data || err;
+        errorReason = horizonData?.detail || horizonData?.title || getErrorDetails(err);
       }
 
       const now = new Date().toISOString();
