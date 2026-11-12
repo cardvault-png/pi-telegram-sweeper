@@ -5,7 +5,7 @@ const StellarSdk = require('@stellar/stellar-sdk');
 const HORIZON_URL = process.env.PI_HORIZON_URL || 'https://api.mainnet.minepi.com';
 const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE || 'Pi Network';
 const DESTINATION = process.env.SWEEP_DESTINATION_ADDRESS || '';
-const POLL_INTERVAL_MS = Math.max(10, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
+const POLL_INTERVAL_MS = Math.max(500, Number(process.env.SWEEP_POLL_INTERVAL_MS || 500));
 const MIN_THRESHOLD = Number(process.env.SWEEP_MIN_THRESHOLD || 0.002);
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -44,9 +44,9 @@ const WalletManager = {
     liveWalletsMap.set(String(id), { 
       id, 
       publicKey, 
-      public_key: publicKey, // Ensures compatibility with all code pathways
+      public_key: publicKey, 
       secretKey, 
-      secret_key: secretKey, // Ensures compatibility with all code pathways
+      secret_key: secretKey, 
       label, 
       chatId,
       chat_id: chatId 
@@ -63,13 +63,37 @@ const WalletManager = {
   }
 };
 
-async function notifyTelegram(bot, chatId, message) {
+// Fire-and-forget notification dispatch: sends information to Telegram immediately without blocking
+function notifyTelegramAsync(bot, chatId, message) {
   if (!bot || !chatId) return;
-  try {
-    await bot.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true });
-  } catch (error) {
+  bot.sendMessage(chatId, message, { parse_mode: 'HTML', disable_web_page_preview: true }).catch((error) => {
     log('ERROR', 'Telegram notification dispatch failed', error.message);
+  });
+}
+
+// Helper to evaluate claimable balance predicates recursively against current time
+function isPredicateMet(predicate, nowSec) {
+  if (!predicate) return true;
+  if (predicate.unconditional === true) return true;
+  
+  if (predicate.abs_before) {
+    const absTime = Math.floor(new Date(predicate.abs_before).getTime() / 1000);
+    if (nowSec >= absTime) return false;
   }
+  if (predicate.abs_before_epoch) {
+    if (nowSec >= Number(predicate.abs_before_epoch)) return false;
+  }
+  if (predicate.and_predicates && Array.isArray(predicate.and_predicates)) {
+    return predicate.and_predicates.every(p => isPredicateMet(p, nowSec));
+  }
+  if (predicate.or_predicates && Array.isArray(predicate.or_predicates)) {
+    return predicate.or_predicates.some(p => isPredicateMet(p, nowSec));
+  }
+  if (predicate.not_predicate) {
+    return !isPredicateMet(predicate.not_predicate, nowSec);
+  }
+  
+  return true;
 }
 
 const SweeperEngine = {
@@ -84,23 +108,27 @@ const SweeperEngine = {
         locked = Number(native.locked_balance || 0);
       }
 
-      // Check for any claimable balances waiting to be claimed
       let claimableTotal = 0;
       let claimableIds = [];
+      const nowSec = Math.floor(Date.now() / 1000);
+
       try {
         const claimableResp = await server.claimableBalances().claimant(publicKey).call();
         if (claimableResp && claimableResp.records) {
           for (const cb of claimableResp.records) {
-            // Check if it's native Pi asset
             if (cb.asset === 'native' || cb.asset.includes('PI')) {
+              const claimantEntry = cb.claimants.find(c => c.destination === publicKey);
+              if (claimantEntry && claimantEntry.predicate) {
+                if (!isPredicateMet(claimantEntry.predicate, nowSec)) {
+                  continue; 
+                }
+              }
               claimableTotal += Number(cb.amount || 0);
               claimableIds.push(cb.id);
             }
           }
         }
-      } catch (claimErr) {
-        // Non-fatal if claimable balance query fails
-      }
+      } catch (claimErr) {}
 
       const totalSpendable = Math.max(0, (ledgerTotal - locked) + claimableTotal);
       const verified = (ledgerTotal > 0 || claimableTotal > 0);
@@ -108,10 +136,12 @@ const SweeperEngine = {
       return { 
         spendable: totalSpendable, 
         verified, 
-        claimableIds 
+        claimableIds,
+        sequenceNumber: account.sequence,
+        subentryCount: account.subentry_count || 0
       };
     } catch (error) {
-      return { spendable: 0, verified: false, claimableIds: [] };
+      return { spendable: 0, verified: false, claimableIds: [], sequenceNumber: null, subentryCount: 0 };
     }
   },
 
@@ -130,34 +160,48 @@ const SweeperEngine = {
 
       log('INFO', `Wallet Box #${id} matches eligible threshold: ${evalResult.spendable} Pi.`);
 
-      await notifyTelegram(bot, wallet.chat_id, `🔍 <b>SWEEP DETECTED IN RAM!</b>\nBox: #${wallet.id}\nAvailable: <code>${evalResult.spendable.toFixed(7)} Pi</code>`);
+      notifyTelegramAsync(bot, wallet.chat_id, `🔍 <b>SWEEP DETECTED IN RAM!</b>\nBox: #${wallet.id}\nAvailable: <code>${evalResult.spendable.toFixed(7)} Pi</code>`);
 
       const sourceKeypair = StellarSdk.Keypair.fromSecret(wallet.secret_key);
-      let baseFee = 100;
-      try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100; }
+      let baseFee = 100000; // Pi Mainnet standard minimum fee fallback (0.01 Pi in stroops)
+      try { baseFee = await server.fetchBaseFee(); } catch (e) { baseFee = 100000; }
 
-      const trialBuffers = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 1.0];
-      let success = false, sweptAmount = 0, txHash = '', errorReason = '';
+      let success = false;
+      let sweptAmount = 0;
+      let txHash = '';
+      let errorReason = '';
 
-      for (const buffer of trialBuffers) {
-        const targetAmount = evalResult.spendable - buffer;
-        if (targetAmount <= 0) continue;
+      try {
+        const freshAccountData = await server.loadAccount(wallet.public_key);
+        const accountObject = new StellarSdk.Account(wallet.public_key, freshAccountData.sequence);
 
-        try {
-          const freshAccount = await server.loadAccount(wallet.public_key);
-          let txBuilder = new StellarSdk.TransactionBuilder(freshAccount, {
-            fee: String(baseFee),
+        let totalOpsCount = 1; // Payment operation
+        if (evalResult.claimableIds && evalResult.claimableIds.length > 0) {
+          totalOpsCount += evalResult.claimableIds.length;
+        }
+
+        const totalFeeInPi = (Number(baseFee) * totalOpsCount) / 10000000;
+        
+        // Use exact subentry count without unsafe subtraction for sponsored claimable balances
+        const effectiveSubentries = freshAccountData.subentry_count || 0;
+        const baseReservePerEntry = 0.01; 
+        const mandatoryReserve = (2 + effectiveSubentries) * baseReservePerEntry;
+
+        const reserveBuffer = mandatoryReserve + totalFeeInPi;
+        const targetAmount = evalResult.spendable - reserveBuffer;
+
+        if (targetAmount > 0) {
+          let txBuilder = new StellarSdk.TransactionBuilder(accountObject, {
+            fee: String(baseFee * totalOpsCount),
             networkPassphrase: NETWORK_PASSPHRASE
           });
 
-          // If there are claimable balances, claim them first in the same transaction
           if (evalResult.claimableIds && evalResult.claimableIds.length > 0) {
             for (const balanceId of evalResult.claimableIds) {
               txBuilder.addOperation(StellarSdk.Operation.claimClaimableBalance({ balanceId }));
             }
           }
 
-          // Add the payment operation to sweep funds to the destination
           txBuilder.addOperation(StellarSdk.Operation.payment({
             destination: DESTINATION,
             asset: StellarSdk.Asset.native(),
@@ -165,27 +209,27 @@ const SweeperEngine = {
           }));
 
           const transaction = txBuilder.setTimeout(30).build();
-
           transaction.sign(sourceKeypair);
+
           const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
           txHash = response?.hash || response?.data?.hash || 'Submitted';
           success = true;
-          break;
-        } catch (err) {
-          errorReason = getErrorDetails(err);
-          continue;
+        } else {
+          errorReason = 'Calculated target amount is below zero after accounting for exact Pi reserves and fees.';
         }
+      } catch (err) {
+        errorReason = getErrorDetails(err);
       }
 
       const now = new Date().toISOString();
       if (success) {
         db.logTransaction({ wallet_id: id, source_address: wallet.public_key, destination_address: DESTINATION, amount: String(sweptAmount), transaction_hash: txHash, status: 'SUCCESS', created_at: now });
-        await notifyTelegram(bot, wallet.chat_id, `🚀 <b>SWEEP SUCCESSFUL!</b>\nBox: #${wallet.id}\nAmount: <code>${sweptAmount.toFixed(7)} Pi</code>\nHash: <code>${txHash}</code>`);
+        notifyTelegramAsync(bot, wallet.chat_id, `🚀 <b>SWEEP SUCCESSFUL!</b>\nBox: #${wallet.id}\nAmount: <code>${sweptAmount.toFixed(7)} Pi</code>\nHash: <code>${txHash}</code>`);
         return { status: 'SUCCESS' };
       } else {
         db.logTransaction({ wallet_id: id, source_address: wallet.public_key, destination_address: DESTINATION, amount: '0', status: 'FAILED', error_details: errorReason, created_at: now });
-        await notifyTelegram(bot, wallet.chat_id, `⚠️ <b>SWEEP FAILURE</b>\nBox: #${wallet.id}\nError: <code>${errorReason}</code>`);
+        notifyTelegramAsync(bot, wallet.chat_id, `⚠️ <b>SWEEP FAILURE</b>\nBox: #${wallet.id}\nError: <code>${errorReason}</code>`);
         return { status: 'FAILED' };
       }
     } catch (criticalError) {
@@ -220,4 +264,4 @@ function stopSweeperEngine() {
   if (monitorTimeoutId) clearTimeout(monitorTimeoutId);
 }
 
-module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram };
+module.exports = { initDatabase, WalletManager, startSweeperEngine, stopSweeperEngine, notifyTelegram: notifyTelegramAsync };
