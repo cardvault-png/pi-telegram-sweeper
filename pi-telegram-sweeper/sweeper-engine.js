@@ -207,13 +207,16 @@ const SweeperEngine = {
             asset: StellarSdk.Asset.native(),
             amount: targetAmount.toFixed(7)
           }));
-
-          const transaction = txBuilder.setTimeout(30).build();
+          
+                    const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
 
           const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
-          txHash = response?.hash || response?.data?.hash || 'Submitted';
+          txHash = response?.hash || response?.data?.hash;
+          if (!txHash) {
+            throw new Error('Transaction submitted but no transaction hash returned from network.');
+          }
           success = true;
         } else {
           errorReason = 'Calculated target amount is below zero after accounting for exact Pi reserves and fees.';
