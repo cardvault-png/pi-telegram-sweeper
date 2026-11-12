@@ -211,11 +211,16 @@ const SweeperEngine = {
                     const transaction = txBuilder.setTimeout(30).build();
           transaction.sign(sourceKeypair);
           
-          const response = await server.submitTransaction(transaction);
+                    const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
           
-          // A successful Stellar submission returns a hash directly or inside tx
-          txHash = response?.hash || response?.result_xdr || (response?.data && response.data.hash);
+          // Check if Horizon returned an error payload instead of a success hash
+          if (response?.title || response?.detail || response?.status >= 400) {
+            const errReason = response.detail || response.title || JSON.stringify(response.extras || {});
+            throw new Error(`Horizon Rejected: ${errReason}`);
+          }
+          
+          txHash = response?.hash || response?.result_xdr;
           
           if (!txHash) {
             throw new Error('Transaction submitted but no transaction hash returned.');
