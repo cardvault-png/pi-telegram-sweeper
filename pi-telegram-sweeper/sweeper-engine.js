@@ -18,11 +18,14 @@ const liveWalletsMap = new Map();
 const transactionHistory = [];
 
 function getErrorDetails(error) {
-  const codes = error?.response?.data?.extras?.result_codes;
-  if (codes) {
-    return `Result Codes: Tx=${codes.transaction} | Ops=${JSON.stringify(codes.operations)}`;
+  const data = error?.response?.data;
+  if (data) {
+    if (data.extras && data.extras.result_codes) {
+      return `REJECTED -> Tx Code: ${data.extras.result_codes.transaction}, Op Codes: ${JSON.stringify(data.extras.result_codes.operations)}`
+    }
+    return data.detail || data.title || JSON.stringify(data);
   }
-  return error?.response?.data?.detail || error?.response?.data?.title || error?.message || String(error);
+  return error?.message || String(error);
 }
 
 function log(level, message, details) {
