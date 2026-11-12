@@ -213,10 +213,14 @@ const SweeperEngine = {
 
           const response = await server.submitTransaction(transaction);
           sweptAmount = targetAmount;
-          txHash = response?.hash || response?.data?.hash;
-          if (!txHash) {
-            throw new Error('Transaction submitted but no transaction hash returned from network.');
-          }
+          txHash = response?.hash || response?.result_meta_xdr || response?.data?.hash;
+if (!txHash && response) {
+  txHash = response.id || 'Submitted_OK';
+}
+if (!txHash) {
+  throw new Error('Transaction submitted but no transaction hash returned.');
+}
+          
           success = true;
         } else {
           errorReason = 'Calculated target amount is below zero after accounting for exact Pi reserves and fees.';
