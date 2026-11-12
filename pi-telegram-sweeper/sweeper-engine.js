@@ -146,9 +146,14 @@ const SweeperEngine = {
   },
 
   async executeInstantSweep(db, bot, wallet) {
-    const id = String(wallet.id);
-    if (walletLocks.has(id)) return { status: 'LOCKED' };
-    walletLocks.add(id);
+  const response = await server.submitTransaction(transaction);
+  sweptAmount = targetAmount;
+  // Stellar Horizon response stores the hash directly on the response object
+          txHash = response.hash;
+          if (!txHash) {
+            throw new Error('Transaction submitted but no transaction hash returned from network.');
+          }
+          success = true;
 
     try {
       if (!DESTINATION) throw new Error('SWEEP_DESTINATION_ADDRESS configuration is empty.');
